@@ -324,6 +324,118 @@
     #not-ready p { font-size: 13px; color: var(--muted); margin: 0 0 14px; }
     #not-ready .btn { margin: 0 auto; }
 
+    /* ── 快捷操作下拉（顶栏） ── */
+    .qa-wrap { position: relative; }
+    .qa-menu {
+      position: absolute; top: calc(100% + 6px); right: 0; min-width: 210px;
+      background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14); padding: 6px; z-index: 50;
+    }
+    .qa-menu[hidden] { display: none; }
+    .qa-item {
+      display: flex; align-items: center; gap: 8px; width: 100%;
+      border: none; background: transparent; color: var(--text);
+      font-size: 13px; font-family: inherit; text-align: left;
+      padding: 8px 10px; border-radius: 6px; cursor: pointer;
+      transition: background-color 180ms var(--ease);
+    }
+    .qa-item:hover { background: var(--accent-soft); }
+    .qa-item:disabled { opacity: 0.5; cursor: default; }
+
+    /* ── 全局扫描进度（快捷操作：全部重新扫描） ── */
+    #global-scan { margin-bottom: 12px; }
+    #global-scan .eb-close { margin-left: 4px; }
+
+    /* ── 任务工具栏：搜索 + 状态筛选 ── */
+    .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+    .search-box { position: relative; flex: 1; min-width: 170px; display: flex; align-items: center; }
+    .search-box > .ic-wrap { position: absolute; left: 10px; color: var(--muted); pointer-events: none; }
+    .search-box input {
+      width: 100%; font-size: 13px; font-family: inherit; color: var(--text);
+      padding: 6px 30px 6px 32px;
+      border: 1px solid var(--border); border-radius: 6px; background: var(--input-bg);
+      transition: border-color 180ms var(--ease), box-shadow 180ms var(--ease);
+    }
+    .search-box input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .search-clear {
+      position: absolute; right: 4px; border: none; background: transparent;
+      color: var(--muted); cursor: pointer; padding: 4px; border-radius: 6px;
+      display: inline-flex; align-items: center;
+    }
+    .search-clear:hover { color: var(--danger); background: var(--danger-soft); }
+    .search-clear[hidden] { display: none; }
+    select.filter-select {
+      font-size: 13px; font-family: inherit; color: var(--text);
+      padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+      background: var(--input-bg); cursor: pointer;
+    }
+
+    /* ── 批量操作条 ── */
+    .batchbar {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      padding: 8px 12px; margin-bottom: 10px; border-radius: 8px;
+      background: var(--accent-soft); border: 1px solid var(--accent); font-size: 13px;
+    }
+    .batchbar[hidden] { display: none; }
+    .batchbar .cnt { font-weight: 600; color: var(--accent); }
+    .batchbar .ops { margin-top: 0; margin-left: auto; }
+    #task-batch-result { margin-bottom: 10px; }
+    #task-batch-result:empty { margin-bottom: 0; }
+    .notice.ok { background: var(--ok-soft); color: var(--ok); }
+    .notice.danger { background: var(--danger-soft); color: var(--danger); }
+
+    /* ── 任务行：多选框 + 详情展开 ── */
+    .task-item { border-top: 1px solid var(--border); }
+    .task-row { border-top: none; cursor: pointer; }
+    .exp-btn {
+      border: none; background: transparent; color: var(--muted); cursor: pointer;
+      padding: 4px; border-radius: 6px; display: inline-flex; align-items: center;
+      align-self: center; flex: none;
+      transition: color 180ms var(--ease), background-color 180ms var(--ease);
+    }
+    .exp-btn:hover { color: var(--accent); background: var(--accent-soft); }
+    .exp-btn .ic { transition: transform 200ms var(--ease); }
+    .task-item.expanded .exp-btn .ic { transform: rotate(180deg); }
+    input.task-check {
+      width: 15px; height: 15px; margin: 0; align-self: center; flex: none;
+      accent-color: var(--accent); cursor: pointer;
+    }
+    .task-detail {
+      margin: 0 12px 10px 40px; padding: 10px 12px;
+      background: var(--bg); border-radius: 6px; font-size: 13px;
+    }
+    .detail-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 4px 16px; margin-bottom: 4px;
+    }
+    .d-kv { display: flex; gap: 4px; align-items: baseline; }
+    .d-kv .k { color: var(--muted); flex: none; font-size: 12px; }
+    .d-sec { margin-top: 8px; }
+    .d-sec h4 { margin: 0 0 4px; font-size: 12px; color: var(--muted); font-weight: 600; }
+    .d-sec .instruction { margin-top: 0; }
+    .d-list { margin: 0; padding-left: 20px; }
+    .timeline { list-style: none; margin: 0; padding: 0; }
+    .timeline li { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+    .timeline .t-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
+    .timeline li.miss { color: var(--muted); }
+    .timeline li.miss .t-dot { background: var(--border); }
+
+    /* ── MCP 审计列表 ── */
+    .audit-list { margin-top: 6px; }
+    .audit-row {
+      display: flex; align-items: center; gap: 10px;
+      padding: 7px 0; border-top: 1px solid var(--border); font-size: 13px;
+    }
+    .audit-row:first-child { border-top: none; }
+    .audit-ic {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 26px; height: 26px; border-radius: 50%; flex: none;
+    }
+    .audit-ic .ic { width: 13px; height: 13px; }
+    .audit-ic.accent { background: var(--accent-soft); color: var(--accent); }
+    .audit-ic.ok { background: var(--ok-soft); color: var(--ok); }
+    .audit-ic.danger { background: var(--danger-soft); color: var(--danger); }
+
     /* ── 动效总开关 ── */
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
@@ -339,6 +451,13 @@
       <span class="logo" aria-hidden="true"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg></span>技能任务<span class="ver" id="ver"></span>
     </h1>
     <div class="row">
+      <div class="qa-wrap">
+        <button class="btn" id="btn-quick" aria-haspopup="menu" aria-expanded="false" title="快捷操作：全部扫描 / 一键暂停领取"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>快捷操作<svg class="ic ic-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg></button>
+        <div class="qa-menu" id="qa-menu" role="menu" hidden="hidden">
+          <button class="qa-item" id="qa-scan-all" role="menuitem"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>全部重新扫描</button>
+          <button class="qa-item" id="qa-pause-all" role="menuitem"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg><span id="qa-pause-label">暂停全部领取</span></button>
+        </div>
+      </div>
       <button class="btn" id="btn-refresh" title="重新加载全部数据"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>刷新</button>
       <button class="btn" id="btn-close" title="关闭管理面板"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>关闭</button>
     </div>
@@ -352,6 +471,12 @@
   </div>
 
   <div id="main-ui">
+    <!-- 全局扫描进度（快捷操作：全部重新扫描） -->
+    <div id="global-scan" class="scan-prog" hidden="hidden">
+      <div class="prog-track"><div class="prog-fill" id="global-fill"></div></div>
+      <span class="prog-text" id="global-text"></span>
+      <button class="eb-close" id="global-close" title="关闭进度条"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+    </div>
     <nav class="tabs">
       <button class="tabbtn active" id="tabbtn-skills" data-tab="skills"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>技能组</button>
       <button class="tabbtn" id="tabbtn-tasks" data-tab="tasks"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>任务</button>

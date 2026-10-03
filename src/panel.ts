@@ -75,6 +75,7 @@ const ICONS: Record<string, string> = {
   power: '<path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/>',
   'file-text':
     '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>',
+  activity: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
 };
 
 /** 图标 svg 字符串（cls 控制尺寸：默认 .ic 15px，徽章内用 .ic-sm 12px） */
@@ -369,9 +370,21 @@ let activeTab: TabId = 'skills';
 let formState: { editingId: string | null } | null = null;
 /** 正在执行重新扫描的技能组 id（防重复点击） */
 let scanBusy: string | null = null;
+/** 正在执行全部重新扫描（快捷操作，防重复点击） */
+let scanAllRunning = false;
 /** 集合选项缓存（表单内用） */
 let collCache: { ok: boolean; options: Array<{ key: string; name: string; depth: number }> } | null =
   null;
+/** 任务 tab 搜索关键词（按条目 key 模糊匹配，client-side） */
+let taskSearch = '';
+/** 任务 tab 状态筛选（'all' = 全部状态，client-side） */
+let taskStatusFilter: TaskStatus | 'all' = 'all';
+/** 已选中的任务 id（批量操作） */
+const selectedTasks = new Set<string>();
+/** 已展开详情的任务 id */
+const expandedTasks = new Set<string>();
+/** MCP 审计视图展示的最近事件条数 */
+const AUDIT_LIMIT = 20;
 
 // ────────────────────────── 初始化 ──────────────────────────
 
@@ -393,6 +406,7 @@ function init(): void {
   for (const t of ['skills', 'tasks', 'mcp'] as TabId[]) {
     $<HTMLButtonElement>(`tabbtn-${t}`).addEventListener('click', () => switchTab(t));
   }
+  bindQuickActions();
 
   api = getAPI();
   if (!api) {
@@ -1025,7 +1039,19 @@ async function deleteSkillGroup(id: string): Promise<void> {
 
 // ══════════════════════════ 任务选项卡 ══════════════════════════
 
-/** 渲染任务选项卡：按技能组分组，每组显示计数 + 各状态明细 */
+/** 任务是否匹配当前搜索/筛选（client-side，不过滤数据源本身） */
+function taskMatches(t: Task): boolean {
+  if (taskStatusFilter !== 'all' && t.status !== taskStatusFilter) {
+    return false;
+  }
+  const q = taskSearch.trim().toLowerCase();
+  if (q && !t.itemKey.toLowerCase().includes(q)) {
+    return false;
+  }
+  return true;
+}
+
+/** 渲染任务选项卡：工具栏（搜索+筛选）/ 批量操作条 / 列表容器 */
 function renderTasks(): void {
   if (!api) {
     return;
@@ -1044,16 +1070,166 @@ function renderTasks(): void {
     );
     return;
   }
-  // 全部技能组都没有任务时给整体空状态（带引导），避免一屏空分组
-  let total = 0;
-  const countsByGroup = new Map<string, Record<TaskStatus, number>>();
-  for (const sg of groups) {
-    const counts = api.tasks.countsBySkill(sg.id);
-    countsByGroup.set(sg.id, counts);
-    total += STATBAR_ORDER.reduce((a, s) => a + (counts[s] ?? 0), 0);
+
+  // ── 工具栏：搜索框 + 状态筛选器 ──
+  const toolbar = el('div', 'toolbar');
+  const searchBox = el('div', 'search-box');
+  searchBox.append(iconEl('search'));
+  const searchInput = el('input');
+  searchInput.type = 'text';
+  searchInput.placeholder = '按条目 key 搜索任务…';
+  searchInput.setAttribute('aria-label', '按条目 key 搜索任务');
+  searchInput.value = taskSearch;
+  const clearBtn = el('button', 'search-clear');
+  clearBtn.innerHTML = iconSVG('x', 'ic ic-sm');
+  clearBtn.title = '清除搜索';
+  clearBtn.hidden = !taskSearch;
+  clearBtn.addEventListener('click', () => {
+    taskSearch = '';
+    const inp = document.getElementById('task-search-input') as HTMLInputElement | null;
+    if (inp) {
+      inp.value = '';
+      inp.focus();
+    }
+    clearBtn.hidden = true;
+    renderTaskList();
+  });
+  searchInput.id = 'task-search-input';
+  searchInput.addEventListener('input', () => {
+    taskSearch = searchInput.value;
+    clearBtn.hidden = !taskSearch;
+    renderTaskList();
+  });
+  searchBox.append(searchInput, clearBtn);
+  toolbar.append(searchBox);
+
+  const filterSel = el('select', 'filter-select') as HTMLSelectElement;
+  filterSel.id = 'task-status-filter';
+  filterSel.setAttribute('aria-label', '按任务状态筛选');
+  filterSel.append(new Option('全部状态', 'all'));
+  for (const st of [...ACTIVE_STATUS_ORDER, 'done' as TaskStatus]) {
+    filterSel.append(new Option(STATUS_META[st].label, st));
   }
-  if (total === 0) {
-    root.append(
+  filterSel.value = taskStatusFilter;
+  filterSel.addEventListener('change', () => {
+    taskStatusFilter = filterSel.value as TaskStatus | 'all';
+    renderTaskList();
+  });
+  toolbar.append(filterSel);
+  const filterInfo = el('span', 'muted', '');
+  filterInfo.id = 'task-filter-info';
+  toolbar.append(filterInfo);
+  root.append(toolbar);
+
+  // ── 批量操作条（有选中项时显示） ──
+  const batchBar = el('div', 'batchbar');
+  batchBar.id = 'task-batchbar';
+  batchBar.hidden = true;
+  batchBar.append(el('span', 'cnt', ''));
+  const bbOps = el('div', 'ops');
+  bbOps.append(
+    opBtn('批量重试', () => batchRetry(), {
+      id: 'batch-retry-btn',
+      icon: 'rotate-ccw',
+      title: '重试选中的失败任务（仅失败状态可重试）',
+    })
+  );
+  bbOps.append(
+    opBtn('批量取消', () => batchCancel(), {
+      id: 'batch-cancel-btn',
+      cls: 'danger',
+      icon: 'x',
+      title: '取消选中的未完成任务',
+    })
+  );
+  bbOps.append(
+    opBtn('清除选择', () => {
+      selectedTasks.clear();
+      renderTaskList();
+    }, { icon: 'x', title: '清除已选任务', secondary: true })
+  );
+  batchBar.append(bbOps);
+  root.append(batchBar);
+
+  // 批量操作结果提示（成功/失败汇总）
+  const batchResult = el('div');
+  batchResult.id = 'task-batch-result';
+  root.append(batchResult);
+
+  // ── 列表容器（搜索输入时只重建这里，不丢输入焦点） ──
+  const listWrap = el('div');
+  listWrap.id = 'task-list';
+  root.append(listWrap);
+
+  renderTaskList();
+}
+
+/** 渲染任务列表区（只重建列表容器；保留工具栏与输入焦点） */
+function renderTaskList(): void {
+  if (!api) {
+    return;
+  }
+  const wrap = document.getElementById('task-list');
+  if (!wrap) {
+    return;
+  }
+  wrap.replaceChildren();
+  const groups = api.skillGroups.list(true);
+
+  // 修剪已选：任务已不存在或已变为不可选（已完成/已取消）时移出选择
+  const stillSelectable = new Set<string>();
+  for (const sg of groups) {
+    for (const t of api.tasks.list({ skillGroupId: sg.id })) {
+      if (t.status !== 'done' && t.status !== 'cancelled') {
+        stillSelectable.add(t.id);
+      }
+    }
+  }
+  for (const id of [...selectedTasks]) {
+    if (!stillSelectable.has(id)) {
+      selectedTasks.delete(id);
+    }
+  }
+
+  const filterActive = taskSearch.trim() !== '' || taskStatusFilter !== 'all';
+  let matched = 0;
+  let total = 0;
+  let shownGroups = 0;
+  for (const sg of groups) {
+    const all = api.tasks.list({ skillGroupId: sg.id });
+    total += all.length;
+    const shown = all.filter(taskMatches);
+    matched += shown.length;
+    // 筛选时隐藏无匹配的技能组，保持紧凑
+    if (filterActive && shown.length === 0) {
+      continue;
+    }
+    shownGroups++;
+    wrap.append(taskGroupSection(sg, filterActive ? shown : undefined));
+  }
+
+  const info = document.getElementById('task-filter-info');
+  if (info) {
+    info.textContent = filterActive ? `显示 ${matched} / ${total} 条` : '';
+  }
+
+  if (filterActive && shownGroups === 0) {
+    // 筛选无结果：带清除筛选的空状态
+    wrap.append(
+      emptyState('search', '没有匹配的任务', '尝试调整关键词或更换状态筛选。', {
+        label: '清除筛选',
+        icon: 'x',
+        onClick: () => {
+          taskSearch = '';
+          taskStatusFilter = 'all';
+          renderTasks();
+        },
+      })
+    );
+  } else if (!filterActive && total === 0) {
+    // 全部技能组都没有任务：整体空状态（原有行为）
+    wrap.replaceChildren();
+    wrap.append(
       emptyState(
         'inbox',
         '还没有任务',
@@ -1061,15 +1237,12 @@ function renderTasks(): void {
         { label: '去技能组', icon: 'search', onClick: () => switchTab('skills') }
       )
     );
-    return;
   }
-  for (const sg of groups) {
-    root.append(taskGroupSection(sg));
-  }
+  updateBatchBar();
 }
 
-/** 单个技能组的任务分组块 */
-function taskGroupSection(sg: SkillGroup): HTMLElement {
+/** 单个技能组的任务分组块；filtered 传入时只展示其中任务（搜索/筛选命中） */
+function taskGroupSection(sg: SkillGroup, filtered?: Task[]): HTMLElement {
   const sec = el('section', 'card');
   // —— 头部：名称 + 计数（调 tasks.countsBySkill，必须与下方明细一致） ——
   const counts = api!.tasks.countsBySkill(sg.id);
@@ -1121,10 +1294,14 @@ function taskGroupSection(sg: SkillGroup): HTMLElement {
   prog.append(track, ptext);
   sec.append(prog);
 
-  // —— 明细：六个状态分组（图标+标签+计数，空分组显示"暂无"） ——
-  const tasks = api!.tasks.list({ skillGroupId: sg.id });
+  // —— 明细：各状态分组（图标+标签+计数；筛选时只展示有命中的分组） ——
+  const tasks = filtered ?? api!.tasks.list({ skillGroupId: sg.id });
+  const filtering = filtered !== undefined;
   for (const st of ACTIVE_STATUS_ORDER) {
     const items = tasks.filter((t) => t.status === st);
+    if (filtering && items.length === 0) {
+      continue;
+    }
     const det = el('details', 'status-group');
     det.open = items.length > 0 && st !== 'cancelled';
     const sum = el('summary');
@@ -1141,40 +1318,32 @@ function taskGroupSection(sg: SkillGroup): HTMLElement {
       det.append(el('div', 'task-none', '暂无'));
     }
     for (const t of items) {
-      det.append(taskRow(t));
+      det.append(taskItem(t));
     }
     sec.append(det);
   }
-  // 已完成：可折叠列表，显示条目 key + 完成时间 + 笔记
+  // 已完成：可折叠列表，支持展开详情
   const dones = tasks.filter((t) => t.status === 'done');
-  const doneDet = el('details', 'status-group');
-  const doneSum = el('summary');
-  const doneIc = el('span', 'sum-ic');
-  doneIc.style.color = 'var(--ok)';
-  doneIc.innerHTML = iconSVG('check-circle', 'ic ic-sm');
-  doneSum.append(doneIc);
-  doneSum.append(document.createTextNode(`已完成（${dones.length}）`));
-  const doneChev = el('span', 'chev');
-  doneChev.innerHTML = iconSVG('chevron-down', 'ic ic-sm');
-  doneSum.append(doneChev);
-  doneDet.append(doneSum);
-  if (!dones.length) {
-    doneDet.append(el('div', 'task-none', '暂无'));
-  }
-  for (const t of dones) {
-    const row = el('div', 'task-row');
-    const info = el('div', 'task-info');
-    info.append(el('span', 'mono', t.itemKey));
-    const meta = el('span', 'muted', `　完成于 ${fmtRelative(t.completedAt)}`);
-    meta.title = fmtTime(t.completedAt);
-    info.append(meta);
-    if (t.noteKey) {
-      info.append(el('span', 'muted', `　笔记：${t.noteKey}`));
+  if (!filtering || dones.length > 0) {
+    const doneDet = el('details', 'status-group');
+    const doneSum = el('summary');
+    const doneIc = el('span', 'sum-ic');
+    doneIc.style.color = 'var(--ok)';
+    doneIc.innerHTML = iconSVG('check-circle', 'ic ic-sm');
+    doneSum.append(doneIc);
+    doneSum.append(document.createTextNode(`已完成（${dones.length}）`));
+    const doneChev = el('span', 'chev');
+    doneChev.innerHTML = iconSVG('chevron-down', 'ic ic-sm');
+    doneSum.append(doneChev);
+    doneDet.append(doneSum);
+    if (!dones.length) {
+      doneDet.append(el('div', 'task-none', '暂无'));
     }
-    row.append(info);
-    doneDet.append(row);
+    for (const t of dones) {
+      doneDet.append(taskItem(t));
+    }
+    sec.append(doneDet);
   }
-  sec.append(doneDet);
   return sec;
 }
 
@@ -1185,9 +1354,46 @@ function relTime(ts: number | null | undefined): HTMLElement {
   return s;
 }
 
-/** 单条任务行（未完成状态）：条目 key、相对时间、失败原因 + 操作（hover 显形） */
-function taskRow(t: Task): HTMLElement {
+/** 单条任务（含展开详情）外层容器：展开按钮 + 多选框 + 任务行 + 详情区 */
+function taskItem(t: Task): HTMLElement {
+  const item = el('div', 'task-item');
+  const expanded = expandedTasks.has(t.id);
+  if (expanded) {
+    item.classList.add('expanded');
+  }
   const row = el('div', 'task-row');
+
+  // 展开/收起详情
+  const expBtn = el('button', 'exp-btn');
+  expBtn.innerHTML = iconSVG('chevron-down', 'ic ic-sm');
+  expBtn.title = expanded ? '收起任务详情' : '展开任务详情';
+  expBtn.setAttribute('aria-expanded', String(expanded));
+  expBtn.setAttribute('aria-label', expanded ? '收起任务详情' : '展开任务详情');
+  expBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleTaskDetail(t.id);
+  });
+  row.append(expBtn);
+
+  // 多选框：仅未完成且未取消的任务可参与批量操作
+  if (t.status !== 'done' && t.status !== 'cancelled') {
+    const cb = el('input', 'task-check');
+    cb.type = 'checkbox';
+    cb.checked = selectedTasks.has(t.id);
+    cb.title = '选中该任务以批量操作';
+    cb.setAttribute('aria-label', `选中任务 ${t.itemKey}`);
+    cb.addEventListener('click', (e) => e.stopPropagation());
+    cb.addEventListener('change', () => {
+      if (cb.checked) {
+        selectedTasks.add(t.id);
+      } else {
+        selectedTasks.delete(t.id);
+      }
+      updateBatchBar();
+    });
+    row.append(cb);
+  }
+
   const info = el('div', 'task-info');
   const line1 = el('div');
   line1.append(el('span', 'mono', t.itemKey));
@@ -1228,7 +1434,255 @@ function taskRow(t: Task): HTMLElement {
     );
   }
   row.append(ops);
-  return row;
+
+  // 点击行空白处（非交互元素）切换详情展开
+  row.addEventListener('click', (e) => {
+    const target = e.target as HTMLElement;
+    if (target.closest('button, input, a, select, textarea')) {
+      return;
+    }
+    toggleTaskDetail(t.id);
+  });
+
+  item.append(row);
+  if (expanded) {
+    item.append(taskDetail(t));
+  }
+  return item;
+}
+
+/** 切换任务详情展开/收起 */
+function toggleTaskDetail(id: string): void {
+  if (expandedTasks.has(id)) {
+    expandedTasks.delete(id);
+  } else {
+    expandedTasks.add(id);
+  }
+  renderTaskList();
+}
+
+/** 任务详情区：指令快照 / 技能组版本 / 材料清单 / 交付物 / 时间线 / 尝试次数 */
+function taskDetail(t: Task): HTMLElement {
+  const d = el('div', 'task-detail');
+  const sg = api?.skillGroups.get(t.skillGroupId);
+
+  const grid = el('div', 'detail-grid');
+  grid.append(detailKV('技能组', sg?.name ?? '（技能组已删除）'));
+  grid.append(detailKV('技能组版本', `v${t.skillGroupVersion}`));
+  grid.append(detailKV('尝试次数', String(t.attempts)));
+  d.append(grid);
+
+  // 领取时的指令快照
+  const insSec = el('div', 'd-sec');
+  insSec.append(el('h4', '', '领取时指令快照'));
+  insSec.append(el('div', 'instruction', t.instructionSnapshot || '（空）'));
+  d.append(insSec);
+
+  // 材料清单（按技能组当前 materials 配置逐项列出）
+  const matSec = el('div', 'd-sec');
+  matSec.append(el('h4', '', '材料清单（按技能组当前配置）'));
+  if (sg) {
+    const items = materialItems(sg.materials);
+    const ul = el('ul', 'd-list');
+    if (items.length) {
+      for (const s of items) {
+        ul.append(el('li', '', s));
+      }
+    } else {
+      ul.append(el('li', '', '未配置输入材料'));
+    }
+    matSec.append(ul);
+  } else {
+    matSec.append(el('div', 'muted', '技能组信息不可用'));
+  }
+  d.append(matSec);
+
+  // 交付物（v1 固定为内建笔记）
+  const delSec = el('div', 'd-sec');
+  delSec.append(el('h4', '', '交付物'));
+  const delGrid = el('div', 'detail-grid');
+  delGrid.append(detailKV('类型', '内建笔记'));
+  delGrid.append(detailKV('笔记 key', t.noteKey ?? '尚未写入', !!t.noteKey));
+  delGrid.append(detailKV('写入状态', t.noteKey ? '已写入' : '—'));
+  delSec.append(delGrid);
+  d.append(delSec);
+
+  // 时间线：创建 → 领取 → 完成
+  const tlSec = el('div', 'd-sec');
+  tlSec.append(el('h4', '', '时间线'));
+  const tl = el('ul', 'timeline');
+  tl.append(timelineStep('创建', t.createdAt));
+  tl.append(timelineStep('领取', t.claimedAt));
+  tl.append(timelineStep('完成', t.completedAt));
+  tlSec.append(tl);
+  d.append(tlSec);
+
+  return d;
+}
+
+/** 详情键值行 */
+function detailKV(k: string, v: string, mono = false): HTMLElement {
+  const d = el('div', 'd-kv');
+  d.append(el('span', 'k', `${k}：`));
+  d.append(el('span', mono ? 'mono' : '', v));
+  return d;
+}
+
+/** 时间线步骤（无时间则置灰显示"—"） */
+function timelineStep(label: string, ts: number | null | undefined): HTMLElement {
+  const li = el('li');
+  if (!ts) {
+    li.classList.add('miss');
+  }
+  li.append(el('span', 't-dot'));
+  li.append(el('span', '', label));
+  li.append(el('span', 'muted', ts ? `${fmtRelative(ts)}（${fmtTime(ts)}）` : '—'));
+  return li;
+}
+
+/** 技能组 materials 配置 → 中文材料项列表 */
+function materialItems(m: SkillMaterials): string[] {
+  const parts: string[] = [];
+  if (m.includeMetadata) {
+    parts.push('文献基本信息（标题/作者/年份/条目 key）');
+  }
+  if (m.includeAbstract) {
+    parts.push('摘要');
+  }
+  if (m.includeNotes) {
+    parts.push('已有笔记（标题 + 文本）');
+  }
+  if (m.pdf === 'earliest') {
+    parts.push('最早加入的本地 PDF 路径');
+  }
+  return parts;
+}
+
+/** 刷新批量操作条（选中计数 + 按钮可用性） */
+function updateBatchBar(): void {
+  const bar = document.getElementById('task-batchbar');
+  if (!bar || !api) {
+    return;
+  }
+  const n = selectedTasks.size;
+  bar.hidden = n === 0;
+  const cnt = bar.querySelector('.cnt');
+  if (cnt) {
+    cnt.textContent = `已选 ${n} 项`;
+  }
+  // 批量重试仅当选中包含失败任务时可用
+  let failedCount = 0;
+  for (const id of selectedTasks) {
+    if (api.tasks.get(id)?.status === 'failed') {
+      failedCount++;
+    }
+  }
+  const retryBtn = document.getElementById('batch-retry-btn') as HTMLButtonElement | null;
+  if (retryBtn) {
+    retryBtn.disabled = failedCount === 0;
+    retryBtn.title =
+      failedCount === 0 ? '选中的任务中没有失败待重试的任务' : `重试选中的 ${failedCount} 条失败任务`;
+  }
+}
+
+/** 批量重试：仅 failed 可选；操作前 confirm；逐条调用后汇总结果 */
+async function batchRetry(): Promise<void> {
+  if (!api) {
+    return;
+  }
+  clearError();
+  const targets: Task[] = [];
+  for (const id of selectedTasks) {
+    const t = api.tasks.get(id);
+    if (t && t.status === 'failed') {
+      targets.push(t);
+    }
+  }
+  if (!targets.length) {
+    showError('选中的任务中没有失败待重试的任务。');
+    return;
+  }
+  if (
+    !window.confirm(
+      `确定重试选中的 ${targets.length} 条失败任务吗？（共选中 ${selectedTasks.size} 项）\n重试后任务将回到待领取队列。`
+    )
+  ) {
+    return;
+  }
+  let ok = 0;
+  const errs: string[] = [];
+  for (const t of targets) {
+    try {
+      await api.tasks.retry(t.id);
+      ok++;
+    } catch (e) {
+      errs.push(`${t.itemKey}：${errMsg(e)}`);
+    }
+  }
+  selectedTasks.clear();
+  await refreshTab('tasks');
+  showBatchResult(
+    errs.length === 0,
+    `批量重试完成：成功 ${ok} 条${errs.length ? `，失败 ${errs.length} 条（${errs.join('；')}）` : ''}。`
+  );
+}
+
+/** 批量取消：未完成可选；操作前 confirm；逐条调用后汇总结果 */
+async function batchCancel(): Promise<void> {
+  if (!api) {
+    return;
+  }
+  clearError();
+  const targets: Task[] = [];
+  for (const id of selectedTasks) {
+    const t = api.tasks.get(id);
+    if (t && t.status !== 'done' && t.status !== 'cancelled') {
+      targets.push(t);
+    }
+  }
+  if (!targets.length) {
+    showError('选中的任务中没有可取消的未完成任务。');
+    return;
+  }
+  if (
+    !window.confirm(
+      `确定取消选中的 ${targets.length} 条未完成任务吗？\n取消后任务不再被领取，已生成的数据保留。`
+    )
+  ) {
+    return;
+  }
+  let ok = 0;
+  const errs: string[] = [];
+  for (const t of targets) {
+    try {
+      await api.tasks.cancel(t.id);
+      ok++;
+    } catch (e) {
+      errs.push(`${t.itemKey}：${errMsg(e)}`);
+    }
+  }
+  selectedTasks.clear();
+  await refreshTab('tasks');
+  showBatchResult(
+    errs.length === 0,
+    `批量取消完成：成功 ${ok} 条${errs.length ? `，失败 ${errs.length} 条（${errs.join('；')}）` : ''}。`
+  );
+}
+
+/** 批量操作结果提示（8 秒后自动消失） */
+function showBatchResult(ok: boolean, text: string): void {
+  const box = document.getElementById('task-batch-result');
+  if (!box) {
+    return;
+  }
+  box.replaceChildren();
+  const n = el('div', `notice ${ok ? 'ok' : 'danger'}`);
+  n.append(iconEl(ok ? 'check-circle' : 'alert-circle', 'ic'));
+  n.append(document.createTextNode(text));
+  box.append(n);
+  window.setTimeout(() => {
+    box.replaceChildren();
+  }, 8000);
 }
 
 /** 重试失败任务（failed → pending） */
@@ -1307,6 +1761,140 @@ async function rescan(skillGroupId: string): Promise<void> {
     if (freshBtn) {
       freshBtn.disabled = false;
     }
+  }
+}
+
+// ════════════════════════ 顶栏快捷操作 ════════════════════════
+
+/** 绑定顶栏"快捷操作"下拉菜单（点击外部 / Esc 关闭） */
+function bindQuickActions(): void {
+  const qaBtn = $<HTMLButtonElement>('btn-quick');
+  const qaMenu = $<HTMLDivElement>('qa-menu');
+  qaBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const opening = qaMenu.hidden;
+    if (opening) {
+      refreshQuickMenu();
+    }
+    qaMenu.hidden = !opening;
+    qaBtn.setAttribute('aria-expanded', String(opening));
+  });
+  document.addEventListener('click', (e) => {
+    if (!qaMenu.hidden && !(e.target as HTMLElement).closest('.qa-wrap')) {
+      qaMenu.hidden = true;
+      qaBtn.setAttribute('aria-expanded', 'false');
+    }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !qaMenu.hidden) {
+      qaMenu.hidden = true;
+      qaBtn.setAttribute('aria-expanded', 'false');
+      qaBtn.focus();
+    }
+  });
+  $<HTMLButtonElement>('qa-scan-all').addEventListener('click', () => {
+    qaMenu.hidden = true;
+    qaBtn.setAttribute('aria-expanded', 'false');
+    void scanAllGroups().catch((e: unknown) => showError(`全部扫描失败：${errMsg(e)}`));
+  });
+  $<HTMLButtonElement>('qa-pause-all').addEventListener('click', () => {
+    qaMenu.hidden = true;
+    qaBtn.setAttribute('aria-expanded', 'false');
+    void togglePauseAll().catch((e: unknown) => showError(`操作失败：${errMsg(e)}`));
+  });
+  $<HTMLButtonElement>('global-close').addEventListener('click', () => {
+    $<HTMLDivElement>('global-scan').hidden = true;
+  });
+}
+
+/** 打开菜单前刷新"暂停/恢复全部领取"标签（按当前技能组启停状态决定） */
+function refreshQuickMenu(): void {
+  if (!api) {
+    return;
+  }
+  const groups = api.skillGroups.list(true).filter((sg) => !sg.archived);
+  const anyEnabled = groups.some((sg) => sg.enabled);
+  const item = $<HTMLButtonElement>('qa-pause-all');
+  item.innerHTML = `${iconSVG(anyEnabled ? 'pause' : 'play', 'ic')}<span>${anyEnabled ? '暂停全部领取' : '恢复全部领取'}</span>`;
+  item.title = anyEnabled
+    ? '停用全部未归档技能组：不再生成新任务、外部 AI 无法领取'
+    : '恢复全部未归档技能组的领取';
+}
+
+/** 全部技能组重新扫描（调 generator.scanAllEnabled；语义与单组"扫描"一致） */
+async function scanAllGroups(): Promise<void> {
+  if (!api || scanAllRunning || scanBusy) {
+    return;
+  }
+  scanAllRunning = true;
+  clearError();
+  const bar = $<HTMLDivElement>('global-scan');
+  const fill = $<HTMLDivElement>('global-fill');
+  const text = $<HTMLSpanElement>('global-text');
+  bar.hidden = false;
+  fill.style.width = '0%';
+  text.textContent = '全部扫描中…';
+  try {
+    const results = await api.generator.scanAllEnabled({
+      onProgress: (done, total) => {
+        fill.style.width = total > 0 ? `${Math.round((done / total) * 100)}%` : '0%';
+        text.textContent = `全部扫描中… ${done}/${total}`;
+      },
+    });
+    const agg = results.reduce(
+      (a, r) => ({
+        scanned: a.scanned + r.scanned,
+        created: a.created + r.created,
+        skipped: a.skipped + r.skipped,
+        waitingMaterial: a.waitingMaterial + r.waitingMaterial,
+        promoted: a.promoted + r.promoted,
+      }),
+      { scanned: 0, created: 0, skipped: 0, waitingMaterial: 0, promoted: 0 }
+    );
+    fill.style.width = '100%';
+    text.textContent =
+      `全部扫描完成（${results.length} 个技能组）：已扫描 ${agg.scanned}，` +
+      `新建 ${agg.created}，跳过 ${agg.skipped}，等待材料 ${agg.waitingMaterial}，转为待领取 ${agg.promoted}`;
+    await refreshTab(activeTab);
+  } catch (e) {
+    bar.hidden = true;
+    showError(`全部扫描失败：${errMsg(e)}`);
+  } finally {
+    scanAllRunning = false;
+  }
+}
+
+/** 一键暂停/恢复全部领取：有任一启用则全部停用，否则全部恢复（暂停前 confirm） */
+async function togglePauseAll(): Promise<void> {
+  if (!api) {
+    return;
+  }
+  clearError();
+  const groups = api.skillGroups.list(true).filter((sg) => !sg.archived);
+  if (!groups.length) {
+    showError('没有可操作的技能组。');
+    return;
+  }
+  const anyEnabled = groups.some((sg) => sg.enabled);
+  const target = !anyEnabled;
+  if (!target) {
+    if (
+      !window.confirm(
+        `确定暂停全部 ${groups.length} 个技能组的领取吗？\n暂停后不再生成新任务、外部 AI 无法领取，已有任务保留，可随时恢复。`
+      )
+    ) {
+      return;
+    }
+  }
+  try {
+    for (const sg of groups) {
+      if (sg.enabled !== target) {
+        await api.skillGroups.setEnabled(sg.id, target);
+      }
+    }
+    await refreshTab(activeTab);
+  } catch (e) {
+    showError(`${target ? '恢复' : '暂停'}全部领取失败：${errMsg(e)}`);
   }
 }
 
@@ -1414,6 +2002,79 @@ function renderMcp(): void {
   card.append(notice);
 
   root.append(card);
+  root.append(auditCard());
+}
+
+/** 领取/提交记录卡片：从任务的 claimedAt/completedAt/attempts/lastError/noteKey
+ *  派生最近 AUDIT_LIMIT 条事件（领取/完成/失败），只读展示 */
+function auditCard(): HTMLElement {
+  const card = el('div', 'card');
+  const head = el('div', 'card-head');
+  const sgIcon = el('span', 'sg-ic');
+  sgIcon.innerHTML = iconSVG('activity', 'ic');
+  head.append(sgIcon);
+  head.append(el('h3', '', '领取/提交记录'));
+  head.append(el('span', 'count', `最近 ${AUDIT_LIMIT} 条`));
+  card.append(head);
+
+  interface AuditEvent {
+    ts: number;
+    kind: 'claim' | 'done' | 'fail';
+    task: Task;
+  }
+  const events: AuditEvent[] = [];
+  for (const t of api!.tasks.list()) {
+    if (t.claimedAt) {
+      events.push({ ts: t.claimedAt, kind: 'claim', task: t });
+    }
+    if (t.completedAt) {
+      events.push({ ts: t.completedAt, kind: 'done', task: t });
+    }
+    if (t.status === 'failed') {
+      // 失败事件时间取领取时间（失败发生在领取之后），从未领取则回退创建时间
+      events.push({ ts: t.claimedAt ?? t.createdAt, kind: 'fail', task: t });
+    }
+  }
+  events.sort((a, b) => b.ts - a.ts);
+  const recent = events.slice(0, AUDIT_LIMIT);
+
+  if (!recent.length) {
+    card.append(el('div', 'muted', '暂无领取/提交记录。'));
+    return card;
+  }
+  const KIND_META = {
+    claim: { label: '领取任务', cls: 'accent', icon: 'zap' },
+    done: { label: '提交完成', cls: 'ok', icon: 'check-circle' },
+    fail: { label: '任务失败', cls: 'danger', icon: 'alert-circle' },
+  } as const;
+  const list = el('div', 'audit-list');
+  for (const ev of recent) {
+    const km = KIND_META[ev.kind];
+    const row = el('div', 'audit-row');
+    const aic = el('span', `audit-ic ${km.cls}`);
+    aic.innerHTML = iconSVG(km.icon, 'ic');
+    row.append(aic);
+    const info = el('div', 'task-info');
+    const l1 = el('div');
+    l1.append(el('span', '', km.label));
+    l1.append(document.createTextNode('　'));
+    l1.append(el('span', 'mono', ev.task.itemKey));
+    info.append(l1);
+    const sgName = api!.skillGroups.get(ev.task.skillGroupId)?.name ?? '（技能组已删除）';
+    let sub = sgName;
+    if (ev.kind === 'done' && ev.task.noteKey) {
+      sub += ` · 笔记 ${ev.task.noteKey}`;
+    }
+    if (ev.kind === 'fail' && ev.task.lastError) {
+      sub += ` · ${ev.task.lastError}`;
+    }
+    info.append(el('div', 'muted', sub));
+    row.append(info);
+    row.append(relTime(ev.ts));
+    list.append(row);
+  }
+  card.append(list);
+  return card;
 }
 
 /** 切换 MCP 服务开关 */
