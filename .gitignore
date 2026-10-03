@@ -7,6 +7,8 @@ dist/
 update.json
 addon/content/plugin.js
 addon/content/plugin.js.map
+addon/content/panel.js
+addon/content/panel.js.map
 addon/content/build-info.json
 
 # 系统 / 日志

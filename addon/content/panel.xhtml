@@ -5,34 +5,203 @@
   <meta charset="utf-8" />
   <title>技能任务 · Skill Task</title>
   <style>
-    :root { color-scheme: light dark; }
+    /* 沿用占位页写法：跟随系统浅色/深色 */
+    :root {
+      color-scheme: light dark;
+      --bg: #f4f5f7;
+      --panel: #ffffff;
+      --text: #1f2329;
+      --muted: #6b7280;
+      --border: #dfe3e8;
+      --accent: #2563eb;
+      --accent-soft: rgba(37, 99, 235, 0.10);
+      --danger: #dc2626;
+      --danger-soft: rgba(220, 38, 38, 0.10);
+      --ok: #16a34a;
+      --ok-soft: rgba(22, 163, 74, 0.12);
+      --warn: #b45309;
+      --warn-soft: rgba(180, 83, 9, 0.12);
+      --input-bg: #ffffff;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #191c20;
+        --panel: #23272d;
+        --text: #e8eaed;
+        --muted: #9aa0a8;
+        --border: #3a3f47;
+        --accent: #7aa2f7;
+        --accent-soft: rgba(122, 162, 247, 0.14);
+        --danger: #f87171;
+        --danger-soft: rgba(248, 113, 113, 0.14);
+        --ok: #4ade80;
+        --ok-soft: rgba(74, 222, 128, 0.14);
+        --warn: #fbbf24;
+        --warn-soft: rgba(251, 191, 36, 0.14);
+        --input-bg: #2b3037;
+      }
+    }
+    * { box-sizing: border-box; }
     body {
       font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
-      margin: 0; padding: 32px; line-height: 1.7;
+      margin: 0; padding: 20px 24px; line-height: 1.6;
+      background: var(--bg); color: var(--text);
+      font-size: 14px;
     }
-    h1 { font-size: 20px; margin: 0 0 8px; }
+    header.top {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    header.top h1 { font-size: 18px; margin: 0; }
+    header.top .ver { font-size: 12px; color: var(--muted); margin-left: 8px; }
+    .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+    /* 选项卡 */
+    nav.tabs { display: flex; gap: 4px; border-bottom: 2px solid var(--border); margin-bottom: 16px; }
+    nav.tabs button.tabbtn {
+      border: none; background: transparent; color: var(--muted);
+      font-size: 14px; padding: 8px 16px; cursor: pointer;
+      border-bottom: 2px solid transparent; margin-bottom: -2px;
+    }
+    nav.tabs button.tabbtn.active {
+      color: var(--accent); border-bottom-color: var(--accent); font-weight: 600;
+    }
+    nav.tabs button.tabbtn:hover { color: var(--text); }
+
+    /* 通用按钮 */
+    button.btn {
+      font-size: 13px; padding: 5px 14px; border-radius: 6px;
+      border: 1px solid var(--border); background: var(--panel);
+      color: var(--text); cursor: pointer;
+    }
+    button.btn:hover { background: var(--accent-soft); border-color: var(--accent); }
+    button.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.btn.primary:hover { filter: brightness(1.08); }
+    button.btn.danger { color: var(--danger); }
+    button.btn.danger:hover { background: var(--danger-soft); border-color: var(--danger); }
+    button.btn:disabled { opacity: 0.5; cursor: default; }
+
+    /* 卡片 */
+    .card {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 10px; padding: 14px 16px; margin-bottom: 12px;
+    }
+    .card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .card-head h3 { margin: 0; font-size: 15px; }
+    .card-head .ver { font-size: 12px; color: var(--muted); }
     .badge {
-      display: inline-block; font-size: 12px; padding: 2px 10px;
-      border-radius: 999px; border: 1px solid currentColor; opacity: 0.7;
-      margin-bottom: 16px;
+      display: inline-block; font-size: 12px; padding: 1px 10px;
+      border-radius: 999px; line-height: 1.7;
     }
-    p { margin: 8px 0; opacity: 0.85; }
-    .en { opacity: 0.6; font-size: 14px; }
-    .actions { margin-top: 28px; }
-    button {
-      font-size: 14px; padding: 6px 20px; border-radius: 6px;
-      border: 1px solid #888; background: transparent; cursor: pointer;
+    .badge.ok { background: var(--ok-soft); color: var(--ok); }
+    .badge.muted { background: var(--border); color: var(--muted); }
+    .badge.warn { background: var(--warn-soft); color: var(--warn); }
+    .summary { font-size: 13px; color: var(--muted); margin-top: 6px; }
+    .instruction {
+      font-size: 13px; margin-top: 8px; padding: 8px 10px;
+      background: var(--bg); border-radius: 6px;
+      white-space: pre-wrap; word-break: break-word;
     }
-    button:hover { background: rgba(127, 127, 127, 0.15); }
+    .ops { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+    .count { font-size: 13px; color: var(--muted); }
+    .count strong { color: var(--text); }
+
+    /* 表单 */
+    .form-wrap { border: 1px dashed var(--accent); border-radius: 10px; padding: 16px; margin-top: 12px; background: var(--panel); }
+    .form-wrap h3 { margin: 0 0 12px; font-size: 15px; }
+    .field { margin-bottom: 12px; }
+    .field > label { display: block; font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+    .field input[type="text"], .field textarea {
+      width: 100%; font-size: 14px; padding: 6px 10px;
+      border: 1px solid var(--border); border-radius: 6px;
+      background: var(--input-bg); color: var(--text);
+      font-family: inherit;
+    }
+    .field textarea { min-height: 90px; resize: vertical; }
+    .radio-row, .check-row { display: flex; align-items: center; gap: 6px; margin: 4px 0; font-size: 14px; }
+    .coll-list {
+      max-height: 180px; overflow-y: auto;
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 6px 10px; margin: 6px 0; background: var(--input-bg);
+    }
+    .coll-item { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 13px; }
+    .fixed-note { font-size: 13px; color: var(--muted); background: var(--bg); border-radius: 6px; padding: 8px 10px; }
+    .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+    /* 任务列表 */
+    details.status-group { margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; }
+    details.status-group summary {
+      cursor: pointer; padding: 8px 12px; font-size: 13px; font-weight: 600;
+      background: var(--bg); border-radius: 8px;
+    }
+    details.status-group[open] summary { border-radius: 8px 8px 0 0; }
+    .task-row {
+      display: flex; justify-content: space-between; align-items: flex-start;
+      gap: 10px; padding: 8px 12px; border-top: 1px solid var(--border);
+      font-size: 13px;
+    }
+    .task-info { flex: 1; min-width: 0; }
+    .mono { font-family: ui-monospace, "SF Mono", Consolas, monospace; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .err-inline { color: var(--danger); font-size: 12px; margin-top: 2px; word-break: break-word; }
+    .scan-prog { font-size: 13px; color: var(--accent); margin-top: 8px; }
+
+    /* MCP */
+    .mcp-row { display: flex; align-items: center; gap: 10px; margin: 10px 0; font-size: 14px; }
+    .mcp-row .k { min-width: 88px; color: var(--muted); font-size: 13px; }
+    .switch { width: 40px; height: 22px; }
+    .token-box {
+      font-family: ui-monospace, "SF Mono", Consolas, monospace;
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 6px; padding: 6px 10px; font-size: 13px;
+      word-break: break-all; flex: 1;
+    }
+    .notice {
+      margin-top: 12px; padding: 10px 14px; border-radius: 8px;
+      background: var(--warn-soft); color: var(--warn); font-size: 13px;
+    }
+
+    /* 全局错误提示 */
+    #error-box {
+      background: var(--danger-soft); color: var(--danger);
+      border: 1px solid var(--danger); border-radius: 8px;
+      padding: 10px 14px; margin-bottom: 12px; font-size: 13px;
+      white-space: pre-wrap; word-break: break-word;
+    }
+    #not-ready {
+      text-align: center; padding: 60px 20px; font-size: 15px; color: var(--muted);
+    }
+    .empty { color: var(--muted); padding: 24px 0; text-align: center; }
   </style>
 </head>
 <body>
-  <h1>技能任务 · Skill Task</h1>
-  <div class="badge">占位面板 · Placeholder</div>
-  <p>功能开发中 —— 技能组管理、任务队列、MCP 接口将在后续版本中实现。</p>
-  <p class="en">Under development — skill management, task queue and the MCP interface will be implemented in later versions.</p>
-  <div class="actions">
-    <button onclick="window.close()">关闭 · Close</button>
+  <header class="top">
+    <h1>技能任务<span class="ver" id="ver"></span></h1>
+    <div class="row">
+      <button class="btn" id="btn-refresh">刷新</button>
+      <button class="btn" id="btn-close">关闭</button>
+    </div>
+  </header>
+
+  <!-- 全局错误提示（面板内所有异步操作失败时显示中文信息） -->
+  <div id="error-box" hidden="hidden"></div>
+
+  <div id="main-ui">
+    <nav class="tabs">
+      <button class="tabbtn active" id="tabbtn-skills" data-tab="skills">技能组</button>
+      <button class="tabbtn" id="tabbtn-tasks" data-tab="tasks">任务</button>
+      <button class="tabbtn" id="tabbtn-mcp" data-tab="mcp">MCP 服务</button>
+    </nav>
+    <main>
+      <section id="tab-skills" class="tabpanel"></section>
+      <section id="tab-tasks" class="tabpanel" hidden="hidden"></section>
+      <section id="tab-mcp" class="tabpanel" hidden="hidden"></section>
+    </main>
   </div>
+
+  <!-- 插件核心未挂载时的降级提示 -->
+  <div id="not-ready" hidden="hidden">插件核心未就绪，请重启 Zotero</div>
+
+  <script src="panel.js"></script>
 </body>
 </html>
