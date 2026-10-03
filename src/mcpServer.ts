@@ -32,6 +32,7 @@ import type {
   SubmitResult,
 } from './types';
 import { DEFAULT_LEASE_MS } from './types';
+import { resolveEarliestPdfPath } from './taskGenerator';
 import { prefs } from './prefs';
 import { error as logError, log } from './utils';
 
@@ -562,7 +563,7 @@ export class McpServer implements IMcpServer {
       pkg.notes = collectChildNotes(parent);
     }
     if (mat.pdf === 'earliest') {
-      pkg.pdfPath = await this.resolveEarliestPdfPath(parent);
+      pkg.pdfPath = await resolveEarliestPdfPath(parent);
     }
     return pkg;
   }
@@ -586,62 +587,6 @@ export class McpServer implements IMcpServer {
         }
       }
       return null;
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * 查找父条目下 dateAdded 最早的本地 PDF 附件路径。
-   *
-   * 与模块 C（taskGenerator.resolveEarliestPdfPath）镜像实现：
-   * 此处独立实现一份，不跨模块 import，避免跨分支开发依赖。
-   * 需求 §5 规则：最早 dateAdded；时间相同按附件 key 稳定排序。
-   * 只接受本地导入的 PDF（attachmentLinkMode 为 IMPORTED_FILE 且有本地路径），
-   * 未下载/网络链接/不可读的一律跳过，返回 null。
-   */
-  private async resolveEarliestPdfPath(parent: any): Promise<string | null> {
-    try {
-      const Z = zoteroGlobal();
-      const attachmentIDs: number[] = tryGet(
-        () => (parent.getAttachments ? parent.getAttachments() : []),
-        [] as number[]
-      );
-      const candidates: Array<{
-        key: string;
-        dateAdded: string;
-        path: string;
-      }> = [];
-      for (const attID of attachmentIDs) {
-        const att = Z.Items.get(attID);
-        if (!att || att === false) continue;
-        if (!att.isPDFAttachment?.()) continue; // 只要 PDF
-        if (
-          att.attachmentLinkMode !== Z.Attachments.LINK_MODE_IMPORTED_FILE
-        ) {
-          continue; // 只要本地导入文件，不要链接附件
-        }
-        const path = att.getFilePath ? att.getFilePath() : false;
-        if (!path || typeof path !== 'string') continue; // 无本地文件跳过
-        candidates.push({
-          key: String(att.key),
-          dateAdded: String(att.dateAdded ?? ''),
-          path,
-        });
-      }
-      if (!candidates.length) return null;
-      candidates.sort((a, b) =>
-        a.dateAdded < b.dateAdded
-          ? -1
-          : a.dateAdded > b.dateAdded
-            ? 1
-            : a.key < b.key
-              ? -1
-              : a.key > b.key
-                ? 1
-                : 0
-      );
-      return candidates[0].path;
     } catch {
       return null;
     }
