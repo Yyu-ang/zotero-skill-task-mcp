@@ -1,0 +1,366 @@
+/**
+ * src/skillGroupStore.ts — 模块 A：技能组存储（FR-01 / FR-02）
+ *
+ * 负责技能组数据的增删改查、持久化与范围判定：
+ * - 持久化：JSON 文件，存放在 Zotero 数据目录下 DATA_DIR_NAME 目录中
+ *   （PathUtils.join(Zotero.DataDirectory.dir, DATA_DIR_NAME, 'skill-groups.json')）
+ * - 所有变更方法写穿（write-through），立即落盘
+ * - 范围判定 matchesScope 支持"全库"与"指定集合（含/不含子集合）"
+ *
+ * 只依赖 Zotero 8+ 官方 API（IOUtils / PathUtils / Zotero.Collections），
+ * 官方类型一律以 node_modules/zotero-types 为准，原生 Promise。
+ *
+ * 注意：Zotero 官方 API item.getCollections() 返回的是集合内部 ID（number[]），
+ * 不是集合 key；因此范围判定走"配置 key → 内部 ID（含子集合展开）→ 求交集"路径。
+ */
+
+import {
+  DATA_DIR_NAME,
+  ISkillGroupStore,
+  SkillGroup,
+  SkillGroupCreateData,
+  SkillGroupPatch,
+  uid,
+} from './types';
+import { log, error } from './utils';
+
+/** 持久化文件名 */
+const FILE_NAME = 'skill-groups.json';
+
+/** 深拷贝：保护内存中的内部状态不被调用方篡改 */
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+/**
+ * 技能组存储。构造器私有，请用 SkillGroupStore.load() 创建实例。
+ */
+export class SkillGroupStore implements ISkillGroupStore {
+  private groups: SkillGroup[] = [];
+  private readonly path: string;
+
+  private constructor(path: string, groups: SkillGroup[]) {
+    this.path = path;
+    this.groups = groups;
+  }
+
+  // ──────────── 生命周期 ────────────
+
+  /**
+   * 加载存储：建数据目录（已存在则忽略）+ 读 JSON 文件。
+   * 文件不存在（新安装）视为空数组；文件损坏则记日志并从空开始，
+   * 避免插件启动失败。
+   */
+  static async load(): Promise<SkillGroupStore> {
+    const dir = PathUtils.join(Zotero.DataDirectory.dir, DATA_DIR_NAME);
+    await IOUtils.makeDirectory(dir, { ignoreExisting: true });
+    const path = PathUtils.join(dir, FILE_NAME);
+
+    let data: unknown = [];
+    try {
+      data = await IOUtils.readJSON(path);
+    } catch (e: any) {
+      // 文件不存在是正常情况（首次使用）；其他错误也记日志后从空开始
+      log(`技能组数据文件读取失败，视为空数组: ${path}`, e?.message ?? e);
+      data = [];
+    }
+
+    const groups: SkillGroup[] = Array.isArray(data)
+      ? data.filter((g) => g && typeof g === 'object' && typeof g.id === 'string')
+      : [];
+    return new SkillGroupStore(path, groups);
+  }
+
+  /** 数据文件完整路径（调试/测试用） */
+  getFilePath(): string {
+    return this.path;
+  }
+
+  // ──────────── 查询 ────────────
+
+  list(includeArchived: boolean = false): SkillGroup[] {
+    const list = includeArchived
+      ? this.groups
+      : this.groups.filter((g) => !g.archived);
+    return clone(list);
+  }
+
+  get(id: string): SkillGroup | undefined {
+    const found = this.groups.find((g) => g.id === id);
+    return found ? clone(found) : undefined;
+  }
+
+  // ──────────── 变更（全部写穿落盘） ────────────
+
+  async create(data: SkillGroupCreateData): Promise<SkillGroup> {
+    const name = (data.name ?? '').trim();
+    if (!name) {
+      throw new Error('技能组名称不能为空');
+    }
+    const instruction = (data.instruction ?? '').trim();
+    if (!instruction) {
+      throw new Error('任务指令不能为空');
+    }
+
+    const now = Date.now();
+    const sg: SkillGroup = {
+      id: uid(),
+      name,
+      instruction,
+      enabled: true,
+      archived: false,
+      version: 1,
+      scope: clone(data.scope),
+      materials: clone(data.materials),
+      deliverable: clone(data.deliverable),
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.groups.push(sg);
+    await this.persist();
+    return clone(sg);
+  }
+
+  async update(id: string, patch: SkillGroupPatch): Promise<SkillGroup> {
+    const sg = this.findOrThrow(id);
+
+    // 只允许修改白名单字段，忽略其余字段
+    if (patch.name !== undefined) {
+      const name = (patch.name ?? '').trim();
+      if (!name) {
+        throw new Error('技能组名称不能为空');
+      }
+      sg.name = name;
+    }
+    if (patch.instruction !== undefined) {
+      const instruction = (patch.instruction ?? '').trim();
+      if (!instruction) {
+        throw new Error('任务指令不能为空');
+      }
+      sg.instruction = instruction;
+    }
+    if (patch.scope !== undefined) {
+      sg.scope = clone(patch.scope);
+    }
+    if (patch.materials !== undefined) {
+      sg.materials = clone(patch.materials);
+    }
+    if (patch.deliverable !== undefined) {
+      sg.deliverable = clone(patch.deliverable);
+    }
+
+    sg.version += 1;
+    sg.updatedAt = Date.now();
+    await this.persist();
+    return clone(sg);
+  }
+
+  async setEnabled(id: string, enabled: boolean): Promise<void> {
+    const sg = this.findOrThrow(id);
+    sg.enabled = enabled;
+    sg.updatedAt = Date.now();
+    await this.persist();
+  }
+
+  async copy(id: string): Promise<SkillGroup> {
+    const src = this.findOrThrow(id);
+    const now = Date.now();
+    const sg: SkillGroup = {
+      ...clone(src),
+      id: uid(),
+      name: `${src.name} 副本`,
+      // 副本从 version=1 重新开始；归档的源不直接带出"已归档"状态
+      version: 1,
+      enabled: src.enabled && !src.archived,
+      archived: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.groups.push(sg);
+    await this.persist();
+    return clone(sg);
+  }
+
+  async archive(id: string): Promise<void> {
+    const sg = this.findOrThrow(id);
+    // 归档 = 软删除：不再生成新任务（生成器只扫描 enabled && !archived）
+    sg.archived = true;
+    sg.enabled = false;
+    sg.updatedAt = Date.now();
+    await this.persist();
+  }
+
+  async remove(id: string): Promise<void> {
+    const sg = this.findOrThrow(id);
+    if (!sg.archived) {
+      throw new Error('只能删除已归档的技能组，请先归档');
+    }
+    const idx = this.groups.indexOf(sg);
+    this.groups.splice(idx, 1);
+    await this.persist();
+  }
+
+  // ──────────── 范围判定（FR-02） ────────────
+
+  /**
+   * 条目是否命中技能组范围。
+   * - scope.type === 'all'：直接命中
+   * - 'collections'：条目的所属集合与"配置集合（按开关展开子集合）"求交集
+   * - 只判定书目父条目：附件/笔记等非父条目直接返回 false
+   *
+   * 注意：多集合命中仍只返回一次命中（布尔值），"一个技能组 × 一条目只生成一条任务"
+   * 的唯一性由任务生成器保证。
+   */
+  async matchesScope(sg: SkillGroup, item: any): Promise<boolean> {
+    if (!sg || !item) {
+      return false;
+    }
+    // 全库范围直接命中
+    if (sg.scope.type === 'all') {
+      return true;
+    }
+    if (sg.scope.type !== 'collections') {
+      return false;
+    }
+
+    // 只判定书目父条目（官方 API：isRegularItem；缺失时退化为"非附件且非笔记"）
+    const isParent: boolean =
+      typeof item.isRegularItem === 'function'
+        ? item.isRegularItem()
+        : !(item.isAttachment?.() || item.isNote?.());
+    if (!isParent) {
+      return false;
+    }
+
+    const keys: string[] = Array.isArray(sg.scope.collectionKeys)
+      ? sg.scope.collectionKeys
+      : [];
+    if (keys.length === 0) {
+      return false;
+    }
+
+    // 条目所属集合（官方 API 返回内部 ID 数组）
+    const itemCollectionIds: number[] =
+      typeof item.getCollections === 'function'
+        ? item.getCollections() ?? []
+        : [];
+
+    // 主路径：官方 API —— 配置 key → 内部 ID；includeSubcollections 时用
+    // Zotero.Collections.getByParent(id, true) 展开"自身 + 所有后代集合"，再求交集
+    const includeSubs = sg.scope.includeSubcollections !== false; // 默认 true
+    if (this.canUseCollectionAPIs()) {
+      try {
+        const targetIds = this.expandScopeIDs(sg, item, keys, includeSubs);
+        if (targetIds.size === 0) {
+          return false;
+        }
+        return itemCollectionIds.some((id) => targetIds.has(id));
+      } catch (e) {
+        error('技能组范围判定失败，降级为直接成员判定', e);
+      }
+    }
+
+    // ── 降级路径（子集合展开 API 不可用时）：仅做直接成员判定 ──
+    // 先把条目的集合 ID 反查为 key 再与配置 key 求交集；
+    // 反查也不行时，直接按原始值比对（兼容 getCollections 返回 key 的实现）。
+    return this.directMembershipFallback(keys, itemCollectionIds);
+  }
+
+  // ──────────── 内部方法 ────────────
+
+  /** 查找技能组，不存在则抛中文错误 */
+  private findOrThrow(id: string): SkillGroup {
+    const sg = this.groups.find((g) => g.id === id);
+    if (!sg) {
+      throw new Error(`技能组不存在: ${id}`);
+    }
+    return sg;
+  }
+
+  /** 写穿落盘（IOUtils.writeJSON 默认原子写：先写临时文件再重命名） */
+  private async persist(): Promise<void> {
+    await IOUtils.writeJSON(this.path, this.groups);
+  }
+
+  /** 子集合展开所需的官方 API 是否可用 */
+  private canUseCollectionAPIs(): boolean {
+    const cols: any = Zotero?.Collections;
+    return (
+      !!cols &&
+      typeof cols.getIDFromLibraryAndKey === 'function' &&
+      typeof cols.getByParent === 'function'
+    );
+  }
+
+  /**
+   * 把配置的集合 key 展开为"内部 ID 集合"：
+   * 每个配置集合自身 ID +（includeSubcollections 时）所有后代集合的 ID。
+   * 配置的集合若已被删除（查不到 ID），跳过。
+   */
+  private expandScopeIDs(
+    sg: SkillGroup,
+    item: any,
+    keys: string[],
+    includeSubcollections: boolean
+  ): Set<number> {
+    const ids = new Set<number>();
+    const cols: any = Zotero.Collections;
+    const libraryID: number = item.libraryID ?? Zotero?.Libraries?.userLibraryID;
+
+    for (const key of keys) {
+      let id: number | false = false;
+      try {
+        id = cols.getIDFromLibraryAndKey(libraryID, key);
+      } catch {
+        // 集合不存在或 API 异常，视为已删除，跳过
+        id = false;
+      }
+      if (id === false || id == null) {
+        continue;
+      }
+      ids.add(id);
+      if (includeSubcollections) {
+        // getByParent(parentID, recursive=true) 返回所有后代集合
+        const descendants: any[] = cols.getByParent(id, true) ?? [];
+        for (const d of descendants) {
+          if (d && typeof d.id === 'number') {
+            ids.add(d.id);
+          }
+        }
+      }
+    }
+    return ids;
+  }
+
+  /**
+   * 降级路径：子集合展开 API 不可用时的直接成员判定。
+   * 注：此处不做子集合展开，仅判断条目是否直接属于配置集合之一。
+   */
+  private directMembershipFallback(
+    keys: string[],
+    itemCollectionIds: number[]
+  ): boolean {
+    const cols: any = Zotero?.Collections;
+
+    // 先尝试把条目的集合 ID 反查为 key
+    if (cols && typeof cols.get === 'function') {
+      const itemKeys = new Set<string>();
+      for (const cid of itemCollectionIds) {
+        try {
+          const c = cols.get(cid);
+          if (c && c.key) {
+            itemKeys.add(c.key);
+          }
+        } catch {
+          // 单个集合查不到不影响其他
+        }
+      }
+      if (itemKeys.size > 0) {
+        return keys.some((k) => itemKeys.has(k));
+      }
+    }
+
+    // 最后兜底：按原始值直接比对（兼容返回 key 而非 ID 的实现）
+    return itemCollectionIds.some((v: any) => keys.includes(String(v)));
+  }
+}
