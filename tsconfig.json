@@ -1,0 +1,1 @@
+{"compilerOptions":{"declaration":false,"esModuleInterop":true,"forceConsistentCasingInFileNames":true,"module":"ES2022","moduleResolution":"bundler","outDir":"addon/content","resolveJsonModule":true,"rootDir":"src","skipLibCheck":true,"strict":true,"target":"ES2022","types":["zotero-types"]},"exclude":["node_modules","addon"],"include":["src/**/*.ts"]}

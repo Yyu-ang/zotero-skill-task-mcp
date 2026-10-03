@@ -1,0 +1,14 @@
+# 依赖
+node_modules/
+
+# 构建产物（不进仓库）
+dist/
+*.xpi
+update.json
+addon/content/plugin.js
+addon/content/plugin.js.map
+addon/content/build-info.json
+
+# 系统 / 日志
+.DS_Store
+*.log

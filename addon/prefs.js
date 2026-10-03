@@ -1,0 +1,4 @@
+// 默认偏好设置
+// 插件安装/启用/Zotero 启动时自动读取
+
+pref("extensions.zotero-skill-task.enabled", true);
