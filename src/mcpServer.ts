@@ -34,7 +34,7 @@ import type {
 import { DEFAULT_LEASE_MS } from './types';
 import { resolveEarliestPdfPath } from './taskGenerator';
 import { prefs } from './prefs';
-import { error as logError, log } from './utils';
+import { LIMITS, error as logError, log, truncateForDisplay } from './utils';
 
 // Firefox chrome 特权环境里运行时可用，但 zotero-types 未声明，这里补声明
 declare const DOMParser: any;
@@ -202,14 +202,18 @@ function collectChildNotes(
   for (const id of ids) {
     try {
       const n = Z.Items.get(id);
-      if (!n || n === false || (n.isNote && !n.isNote())) continue;
+      // 防御：条目缺失 / key 非法 / 非笔记一律跳过
+      if (!n || n === false) continue;
+      if (typeof n.key !== 'string' || !n.key) continue;
+      if (n.isNote && !n.isNote()) continue;
       out.push({
-        key: String(n.key),
-        title: tryGet(
-          () => (n.getNoteTitle ? n.getNoteTitle() : ''),
-          ''
+        key: n.key,
+        title: String(
+          tryGet(() => (n.getNoteTitle ? n.getNoteTitle() : ''), '') ?? ''
         ),
-        text: stripHtml(tryGet(() => (n.getNote ? n.getNote() : ''), '')),
+        text: stripHtml(
+          String(tryGet(() => (n.getNote ? n.getNote() : ''), '') ?? '')
+        ),
       });
     } catch {
       // 单条笔记异常跳过，不影响整体材料包
@@ -238,6 +242,8 @@ export class McpServer implements IMcpServer {
   private skillGroups: ISkillGroupStore;
   private tasks: ITaskStore;
   private version: string;
+  /** 端点是否已注册到 Zotero.Server（注册/注销幂等的依据） */
+  private registered = false;
 
   constructor(deps: {
     skillGroups: ISkillGroupStore;
@@ -251,8 +257,14 @@ export class McpServer implements IMcpServer {
 
   // ──────────── IMcpServer ────────────
 
-  /** 注册端点到 Zotero.Server.Endpoints */
+  /**
+   * 注册端点到 Zotero.Server.Endpoints。
+   * 幂等：重复调用直接返回，不重复注册。
+   */
   register(): void {
+    if (this.registered) {
+      return;
+    }
     const Z = zoteroGlobal();
     if (!Z?.Server?.Endpoints) {
       logError('McpServer.register: Zotero.Server.Endpoints 不可用');
@@ -272,11 +284,15 @@ export class McpServer implements IMcpServer {
       },
     };
     Z.Server.Endpoints[MCP_PATH] = McpEndpoint;
+    this.registered = true;
     log('MCP endpoint registered:', MCP_PATH);
   }
 
-  /** 注销端点（不持有 socket，无需额外清理） */
+  /**
+   * 注销端点（幂等）。不持有 socket，删除注册即无残留监听。
+   */
   unregister(): void {
+    this.registered = false;
     try {
       const Z = zoteroGlobal();
       if (Z?.Server?.Endpoints) {
@@ -292,28 +308,65 @@ export class McpServer implements IMcpServer {
     return !!prefs.get(PREF_MCP_ENABLED, false);
   }
 
+  /**
+   * 启停 MCP 服务（幂等）：
+   * - 启用：写 pref + 注册端点（已注册则跳过，不重复注册）
+   * - 停用：写 pref + 注销端点（无残留监听；handler 层的 503 门禁同时保留作纵深防御）
+   * 注册/注销失败抛中文错（面板侧展示）。
+   */
   setEnabled(v: boolean): void {
-    prefs.set(PREF_MCP_ENABLED, v);
+    const changed = this.isEnabled() !== v;
+    try {
+      prefs.set(PREF_MCP_ENABLED, v);
+    } catch (e) {
+      throw new Error(`MCP 服务开关保存失败：${errMsg(e)}`);
+    }
+    try {
+      if (v) {
+        this.register();
+      } else {
+        this.unregister();
+      }
+    } catch (e) {
+      throw new Error(`MCP 服务${v ? '启用' : '停用'}失败：${errMsg(e)}`);
+    }
+    if (changed) {
+      log(`MCP service ${v ? 'enabled' : 'disabled'}`);
+    }
   }
 
-  /** 返回现有 token；没有则生成（32 字节随机 hex）并持久化 */
+  /**
+   * 返回现有 token；没有则生成（32 字节随机 hex）并持久化。
+   * 持久化失败抛中文错（面板侧展示），不静默返回不可用的 token。
+   */
   ensureToken(): string {
     const existing = prefs.get(PREF_MCP_TOKEN, '');
     if (typeof existing === 'string' && existing.length >= 32) {
       return existing;
     }
     const token = randomHex(32);
-    prefs.set(PREF_MCP_TOKEN, token);
+    try {
+      prefs.set(PREF_MCP_TOKEN, token);
+    } catch (e) {
+      throw new Error(`无法生成访问令牌：偏好存储不可用（${errMsg(e)}）`);
+    }
     return token;
   }
 
-  /** 重新生成 token（旧 token 立即失效） */
+  /** 重新生成 token（旧 token 立即失效）；持久化失败抛中文错 */
   regenerateToken(): string {
     const token = randomHex(32);
-    prefs.set(PREF_MCP_TOKEN, token);
+    try {
+      prefs.set(PREF_MCP_TOKEN, token);
+    } catch (e) {
+      throw new Error(`无法重新生成访问令牌：偏好存储不可用（${errMsg(e)}）`);
+    }
     return token;
   }
 
+  /**
+   * 服务状态：绝不抛错（端口探测失败返回 null，由调用方展示为"未知"）。
+   */
   getStatus(): { enabled: boolean; path: string; port: number | null } {
     return {
       enabled: this.isEnabled(),
@@ -496,37 +549,122 @@ export class McpServer implements IMcpServer {
 
   /**
    * 领取：被动、按请求触发，每次至多一条（FR-06）。
-   * 租约并发保护由 tasks.claimNext 原子实现。
+   * 需求 §6：技能组停用/归档后暂停领取——显式指定的停用技能组直接返回明确结果；
+   * 全局领取时只从"启用未归档"技能组的待领取任务里按创建时间取最早，
+   * 停用组的任务连碰都不碰（不领取、不标记失败）。
+   *
+   * 并发说明：先释放过期租约 → 取 pending 快照 → 逐条 claimById。
+   * claimById 只对仍为 pending 的任务加 claimed 标记，被并发抢走返回 null
+   * 继续试下一条；快照之后新建的任务本轮可能 miss，客户端下次轮询即得。
    */
   private async claim(params: any): Promise<ClaimResult> {
     const skillGroupId: string | undefined =
       typeof params?.skillGroupId === 'string' && params.skillGroupId
         ? params.skillGroupId
         : undefined;
-    const task = await this.tasks.claimNext(skillGroupId, DEFAULT_LEASE_MS);
-    if (!task) {
-      // FR-06：无任务时返回明确的空队列结果
-      return { task: null, materials: null, message: 'empty-queue' };
+
+    // 显式指定技能组时先做资格预检，给出明确结果而非空队列
+    if (skillGroupId !== undefined) {
+      const specified = this.skillGroups.get(skillGroupId);
+      if (!specified) {
+        return { task: null, materials: null, message: 'skill-group-not-found' };
+      }
+      if (specified.archived || !specified.enabled) {
+        return { task: null, materials: null, message: 'skill-group-disabled' };
+      }
     }
-    const sg = this.skillGroups.get(task.skillGroupId);
-    if (!sg) {
-      await this.tasks
-        .fail(task.id, 'skill-group-missing')
-        .catch(() => undefined);
-      throw new Error(`技能组不存在：${task.skillGroupId}`);
+
+    try {
+      await this.tasks.releaseExpiredLeases();
+    } catch {
+      // 释放失败不阻塞领取（下次定时/领取时再试）
     }
-    const materials = await this.buildMaterialPackage(sg, task.itemKey);
-    return {
-      task: {
-        id: task.id,
-        skillGroupId: task.skillGroupId,
-        skillGroupVersion: task.skillGroupVersion,
-        instruction: task.instructionSnapshot,
-        itemKey: task.itemKey,
-        leaseExpiresAt: task.leaseExpiresAt ?? Date.now() + DEFAULT_LEASE_MS,
-      },
-      materials,
+    const eligible = new Set(
+      this.skillGroups
+        .list(true)
+        .filter((s) => s.enabled && !s.archived)
+        .map((s) => s.id)
+    );
+    const pendings = this.tasks
+      .list({ status: 'pending', skillGroupId })
+      .filter((t) => eligible.has(t.skillGroupId))
+      // 最早创建优先；时间相同按 id 稳定排序
+      .sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1));
+
+    for (const p of pendings) {
+      const task = await this.claimTaskById(p.id);
+      if (!task) {
+        continue; // 并发下已被其他领取者拿走，试下一条
+      }
+      const sg = this.skillGroups.get(task.skillGroupId);
+      if (!sg) {
+        // 技能组被硬删除：任务成孤儿，标记失败使其在界面可见（不静默丢弃）
+        await this.tasks
+          .fail(task.id, '技能组不存在，任务无法执行')
+          .catch(() => undefined);
+        continue;
+      }
+      if (sg.archived || !sg.enabled) {
+        // 领取瞬间被停用/归档：放回待领取（不记为失败），继续找下一条
+        await this.requeueTask(task.id);
+        continue;
+      }
+      const materials = await this.buildMaterialPackage(sg, task.itemKey);
+      return {
+        task: {
+          id: task.id,
+          skillGroupId: task.skillGroupId,
+          skillGroupVersion: task.skillGroupVersion,
+          instruction: task.instructionSnapshot,
+          itemKey: task.itemKey,
+          leaseExpiresAt: task.leaseExpiresAt ?? Date.now() + DEFAULT_LEASE_MS,
+        },
+        materials,
+      };
+    }
+    // FR-06：无任务时返回明确的空队列结果
+    return { task: null, materials: null, message: 'empty-queue' };
+  }
+
+  /**
+   * TaskStore 的内部扩展方法（requeue / claimById 不在 ITaskStore 接口内），
+   * 这里做结构化调用，避免 mcpServer → taskStore 的类级导入依赖。
+   */
+  private taskStoreInternal(): {
+    requeue?: (taskId: string) => Promise<unknown>;
+    claimById?: (taskId: string, leaseMs: number) => Promise<unknown>;
+  } {
+    return this.tasks as unknown as {
+      requeue?: (taskId: string) => Promise<unknown>;
+      claimById?: (taskId: string, leaseMs: number) => Promise<unknown>;
     };
+  }
+
+  /** 按 id 领取（内部 claimById 的结构化调用；不支持时记日志不断言） */
+  private async claimTaskById(id: string): Promise<any | null> {
+    const store = this.taskStoreInternal();
+    if (typeof store.claimById !== 'function') {
+      logError('McpServer: 任务存储不支持 claimById，无法领取');
+      return null;
+    }
+    // 注意：必须以 store.claimById(...) 形式调用，保持 this 指向 store
+    return (await store.claimById(id, DEFAULT_LEASE_MS)) as any | null;
+  }
+
+  /**
+   * 把已领取任务放回待领取（技能组停用竞态用）。
+   */
+  private async requeueTask(id: string): Promise<void> {
+    const store = this.taskStoreInternal();
+    if (typeof store.requeue === 'function') {
+      // 同上：保持 this 指向 store
+      await store.requeue(id);
+    } else {
+      logError(
+        'McpServer: 任务存储不支持 requeue，任务可能被租约卡住:',
+        truncateForDisplay(id)
+      );
+    }
   }
 
   /**
@@ -546,7 +684,8 @@ export class McpServer implements IMcpServer {
       pdfPath: null,
     };
     if (!parent) return pkg;
-    const mat = sg.materials;
+    // 防御：持久化数据损坏导致 materials 缺失时按"无材料"处理，不抛错
+    const mat: SkillGroup['materials'] = sg.materials ?? ({} as SkillGroup['materials']);
     if (mat.includeMetadata) {
       pkg.metadata = {
         title: tryGet(() => parent.getDisplayTitle(), '') || undefined,
@@ -603,8 +742,10 @@ export class McpServer implements IMcpServer {
    * - 已完成 + 有 noteKey → 幂等返回，不建第二条笔记
    */
   private async submit(params: any): Promise<SubmitResult> {
-    const taskId = params?.taskId;
-    if (!taskId || typeof taskId !== 'string') {
+    // 防御：taskId 必须为非空字符串（外部输入先做类型守卫）
+    const taskId =
+      typeof params?.taskId === 'string' ? params.taskId.trim() : '';
+    if (!taskId) {
       return { ok: false, error: 'missing-taskId' };
     }
     const task = this.tasks.get(taskId);
@@ -630,8 +771,13 @@ export class McpServer implements IMcpServer {
       }
       return { ok: false, error: 'lease-expired' };
     }
+    // 防御：超大笔记直接拒绝，避免 DOM 清理流程被卡死
+    const rawNote = params?.noteHtml;
+    if (typeof rawNote === 'string' && rawNote.length > LIMITS.noteHtml) {
+      return { ok: false, error: 'note-too-large' };
+    }
     // 写回安全：清理后再校验（需求 §8）
-    const clean = sanitizeNoteHtml(params?.noteHtml);
+    const clean = sanitizeNoteHtml(rawNote);
     if (!clean) {
       return { ok: false, error: 'empty-note-after-sanitize' };
     }
@@ -657,11 +803,15 @@ export class McpServer implements IMcpServer {
       log('submit ok:', task.id, '-> note', noteKey);
       return { ok: true, noteKey };
     } catch (e) {
-      // 写回失败：任务保留未完成并记录错误，可重试
+      // 写回失败：任务保留未完成并记录错误，可重试；
+      // 错误信息截断后再持久化/返回（fail 有长度上限校验）
       const msg = errMsg(e);
-      logError('submit note write failed:', task.id, msg);
-      await this.tasks.fail(task.id, msg).catch(() => undefined);
-      return { ok: false, error: `note-write-failed:${msg}` };
+      const short = truncateForDisplay(msg, LIMITS.mcpErrorSnippet);
+      logError('submit note write failed:', task.id, short);
+      const persisted =
+        msg.length > LIMITS.failReason ? msg.slice(0, LIMITS.failReason) + '…' : msg;
+      await this.tasks.fail(task.id, persisted).catch(() => undefined);
+      return { ok: false, error: `note-write-failed:${short}` };
     }
   }
 }

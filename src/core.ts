@@ -73,8 +73,11 @@ export class PluginCore {
         version: this.version,
       });
       generator.registerNotifier();
-      // 端点常驻注册；是否生效由 handler 层的启用开关 + 鉴权决定（默认关闭）
-      mcp.register();
+      // 端点注册由 MCP 开关统一管理：启用时注册（setEnabled 幂等），
+      // 停用时不注册/注销，无残留监听；handler 层的启用门禁同时保留作纵深防御
+      if (mcp.isEnabled()) {
+        mcp.register();
+      }
       this.api = { skillGroups, tasks, generator, mcp, version: this.version };
       // 面板（panel.js）经 Zotero.SkillTask 访问业务 API
       (Zotero as any).SkillTask = this.api;

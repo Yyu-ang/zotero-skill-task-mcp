@@ -161,6 +161,12 @@ export class TaskGenerator implements ITaskGenerator {
   private readonly skillGroups: ISkillGroupStore;
   private readonly tasks: ITaskStore;
   private observerId: string | null = null;
+  /**
+   * 扫描并发 guard（service 层第二道；面板侧另有 scanBusy 第一道）：
+   * 同一技能组同时只允许一次扫描，防止并发扫描在"去重检查→创建"之间
+   * 的 await 间隙重复建任务，破坏"技能组 × 条目"唯一性。
+   */
+  private readonly scanLocks = new Set<string>();
 
   constructor(deps: { skillGroups: ISkillGroupStore; tasks: ITaskStore }) {
     this.skillGroups = deps.skillGroups;
@@ -184,11 +190,41 @@ export class TaskGenerator implements ITaskGenerator {
       log('[TaskGenerator] 跳过扫描（不存在/已归档/已停用）:', skillGroupId);
       return result;
     }
+    if (this.scanLocks.has(skillGroupId)) {
+      throw new Error('该技能组正在扫描中，请稍候再试');
+    }
+    // 扫描依赖的 Zotero API 不可用时直接报中文错（面板侧展示），不静默空跑
+    const Z: any = (globalThis as any).Zotero;
+    if (
+      !Z?.Search ||
+      typeof Z?.Items?.getAsync !== 'function' ||
+      !Z?.Libraries
+    ) {
+      throw new Error('扫描失败：Zotero 条目 API 不可用');
+    }
 
+    this.scanLocks.add(skillGroupId);
+    try {
+      return await this.runScan(sg, opts, result);
+    } finally {
+      this.scanLocks.delete(skillGroupId);
+    }
+  }
+
+  /**
+   * 扫描主体（scanSkillGroup 加锁后调用）：枚举全库父条目，
+   * 逐条做「范围匹配 → 去重/晋升 → 创建」。
+   */
+  private async runScan(
+    sg: SkillGroup,
+    opts: ScanOptions,
+    result: ScanResult,
+  ): Promise<ScanResult> {
+    const Z: any = (globalThis as any).Zotero;
     // 枚举全库候选条目（等价于任务书的 s.libraryID = userLibraryID 写法，
     // types 里 libraryID 是只读属性，故用构造参数传入）
-    const search = new Zotero.Search({
-      libraryID: Zotero.Libraries.userLibraryID,
+    const search = new Z.Search({
+      libraryID: Z.Libraries.userLibraryID,
     });
     const ids = await search.search();
     const total = ids.length;
@@ -200,7 +236,7 @@ export class TaskGenerator implements ITaskGenerator {
         return result;
       }
       const chunk = ids.slice(i, i + SCAN_CHUNK_SIZE);
-      const items = await Zotero.Items.getAsync(chunk);
+      const items = await Z.Items.getAsync(chunk);
       for (const item of items) {
         if (!isParentItem(item)) continue;
         if (opts.signal?.aborted) {
@@ -239,9 +275,20 @@ export class TaskGenerator implements ITaskGenerator {
       log('[TaskGenerator] 观察者已注册，跳过');
       return;
     }
-    const id = Zotero.Notifier.registerObserver(
+    // 防御：Notifier API 不可用时降级为仅手动扫描，不抛错中断启动
+    const Z: any = (globalThis as any).Zotero;
+    if (typeof Z?.Notifier?.registerObserver !== 'function') {
+      log('[TaskGenerator] Notifier API 不可用，跳过观察者注册（仅支持手动扫描）');
+      return;
+    }
+    const id = Z.Notifier.registerObserver(
       {
-        notify: async (event, _type, ids, _extraData) => {
+        notify: async (
+          event: string,
+          _type: string,
+          ids: Array<string | number>,
+          _extraData: any
+        ) => {
           if (event !== 'add') return;
           await this.handleItemsAdded(ids);
         },
@@ -283,12 +330,19 @@ export class TaskGenerator implements ITaskGenerator {
     counters: ScanCounters,
   ): Promise<void> {
     try {
+      // 防御：条目 key 非法（缺失/非字符串）直接跳过，避免污染任务表
+      const itemKey: string =
+        typeof item?.key === 'string' && item.key ? item.key : '';
+      if (!itemKey) {
+        return;
+      }
+
       // 1. 范围匹配
       const inScope = await this.skillGroups.matchesScope(sg, item);
       if (!inScope) return;
 
       // 2. 唯一性去重：同一「技能组 × 条目」最多一条有效任务
-      const existing = this.tasks.findActiveBySkillAndItem(sg.id, item.key);
+      const existing = this.tasks.findActiveBySkillAndItem(sg.id, itemKey);
       if (existing) {
         if (existing.status === 'waiting-material') {
           // FR-05：材料可能后到，重新判定；齐了就晋升为待领取
@@ -311,7 +365,7 @@ export class TaskGenerator implements ITaskGenerator {
         skillGroupId: sg.id,
         skillGroupVersion: sg.version,
         instructionSnapshot: sg.instruction,
-        itemKey: item.key,
+        itemKey,
         status,
       });
       if (ready) {
@@ -333,11 +387,22 @@ export class TaskGenerator implements ITaskGenerator {
   }
 
   /** Notifier 'add' 事件：批量加载后逐条处理，单条失败不中断整体 */
-  private async handleItemsAdded(ids: string[] | number[]): Promise<void> {
+  private async handleItemsAdded(ids: Array<string | number>): Promise<void> {
     if (!ids || !ids.length) return;
     let items: any[];
     try {
-      items = await Zotero.Items.getAsync(ids);
+      // getAsync 的重载只接受纯 string[] 或纯 number[]，混合数组先分流
+      const strIds: string[] = [];
+      const numIds: number[] = [];
+      for (const id of ids) {
+        if (typeof id === 'string') strIds.push(id);
+        else if (typeof id === 'number') numIds.push(id);
+      }
+      const loaded = await Promise.all([
+        numIds.length ? Zotero.Items.getAsync(numIds) : [],
+        strIds.length ? Zotero.Items.getAsync(strIds) : [],
+      ]);
+      items = loaded.flat();
     } catch (e) {
       error('[TaskGenerator] 加载新增条目失败:', e);
       return;

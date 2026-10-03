@@ -22,7 +22,7 @@ import {
   SkillGroupPatch,
   uid,
 } from './types';
-import { log, error } from './utils';
+import { LIMITS, log, error, truncateForDisplay } from './utils';
 
 /** 持久化文件名 */
 const FILE_NAME = 'skill-groups.json';
@@ -32,12 +32,58 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+/** 校验技能组名称：非空 + 长度上限，返回 trim 后的值 */
+function assertValidName(name: unknown): string {
+  const trimmed = typeof name === 'string' ? name.trim() : '';
+  if (!trimmed) {
+    throw new Error('技能组名称不能为空');
+  }
+  if (trimmed.length > LIMITS.skillGroupName) {
+    throw new Error(`技能组名称过长（最多 ${LIMITS.skillGroupName} 字符）`);
+  }
+  return trimmed;
+}
+
+/** 校验任务指令：非空 + 长度上限，返回 trim 后的值 */
+function assertValidInstruction(instruction: unknown): string {
+  const trimmed = typeof instruction === 'string' ? instruction.trim() : '';
+  if (!trimmed) {
+    throw new Error('任务指令不能为空');
+  }
+  if (trimmed.length > LIMITS.instruction) {
+    throw new Error(`任务指令过长（最多 ${LIMITS.instruction} 字符）`);
+  }
+  return trimmed;
+}
+
+/** 校验范围配置：类型合法；指定集合时至少选一个集合 */
+function assertValidScope(scope: unknown): void {
+  const s = scope as SkillGroup['scope'] | undefined;
+  if (!s || (s.type !== 'all' && s.type !== 'collections')) {
+    throw new Error('技能组范围配置无效');
+  }
+  if (s.type === 'collections') {
+    const keys = Array.isArray(s.collectionKeys)
+      ? s.collectionKeys.filter(
+          (k): k is string => typeof k === 'string' && k.length > 0
+        )
+      : [];
+    if (keys.length === 0) {
+      throw new Error('指定集合范围至少选择一个集合');
+    }
+  }
+}
+
 /**
  * 技能组存储。构造器私有，请用 SkillGroupStore.load() 创建实例。
  */
 export class SkillGroupStore implements ISkillGroupStore {
   private groups: SkillGroup[] = [];
   private readonly path: string;
+  /**
+   * 持久化写队列：串行化落盘（同 taskStore：并发 persist 共用临时文件会互相覆盖）。
+   */
+  private persistQueue: Promise<void> = Promise.resolve();
 
   private constructor(path: string, groups: SkillGroup[]) {
     this.path = path;
@@ -93,14 +139,10 @@ export class SkillGroupStore implements ISkillGroupStore {
   // ──────────── 变更（全部写穿落盘） ────────────
 
   async create(data: SkillGroupCreateData): Promise<SkillGroup> {
-    const name = (data.name ?? '').trim();
-    if (!name) {
-      throw new Error('技能组名称不能为空');
-    }
-    const instruction = (data.instruction ?? '').trim();
-    if (!instruction) {
-      throw new Error('任务指令不能为空');
-    }
+    // store 层校验（面板侧已有校验，这里是第二道防线，错误为中文可直接展示）
+    const name = assertValidName(data.name);
+    const instruction = assertValidInstruction(data.instruction);
+    assertValidScope(data.scope);
 
     const now = Date.now();
     const sg: SkillGroup = {
@@ -126,20 +168,13 @@ export class SkillGroupStore implements ISkillGroupStore {
 
     // 只允许修改白名单字段，忽略其余字段
     if (patch.name !== undefined) {
-      const name = (patch.name ?? '').trim();
-      if (!name) {
-        throw new Error('技能组名称不能为空');
-      }
-      sg.name = name;
+      sg.name = assertValidName(patch.name);
     }
     if (patch.instruction !== undefined) {
-      const instruction = (patch.instruction ?? '').trim();
-      if (!instruction) {
-        throw new Error('任务指令不能为空');
-      }
-      sg.instruction = instruction;
+      sg.instruction = assertValidInstruction(patch.instruction);
     }
     if (patch.scope !== undefined) {
+      assertValidScope(patch.scope);
       sg.scope = clone(patch.scope);
     }
     if (patch.materials !== undefined) {
@@ -157,6 +192,9 @@ export class SkillGroupStore implements ISkillGroupStore {
 
   async setEnabled(id: string, enabled: boolean): Promise<void> {
     const sg = this.findOrThrow(id);
+    if (sg.enabled === enabled) {
+      return; // 幂等：状态未变化时不写盘、不更新 updatedAt
+    }
     sg.enabled = enabled;
     sg.updatedAt = Date.now();
     await this.persist();
@@ -168,7 +206,8 @@ export class SkillGroupStore implements ISkillGroupStore {
     const sg: SkillGroup = {
       ...clone(src),
       id: uid(),
-      name: `${src.name} 副本`,
+      // 副本名称加后缀；超长时截断以符合长度上限
+      name: `${src.name} 副本`.slice(0, LIMITS.skillGroupName),
       // 副本从 version=1 重新开始；归档的源不直接带出"已归档"状态
       version: 1,
       enabled: src.enabled && !src.archived,
@@ -213,6 +252,10 @@ export class SkillGroupStore implements ISkillGroupStore {
    */
   async matchesScope(sg: SkillGroup, item: any): Promise<boolean> {
     if (!sg || !item) {
+      return false;
+    }
+    // 防御：持久化数据损坏导致 scope 缺失时直接判为不命中，不抛错
+    if (!sg.scope) {
       return false;
     }
     // 全库范围直接命中
@@ -268,18 +311,25 @@ export class SkillGroupStore implements ISkillGroupStore {
 
   // ──────────── 内部方法 ────────────
 
-  /** 查找技能组，不存在则抛中文错误 */
+  /** 查找技能组，不存在则抛中文错误（id 超长时截断展示） */
   private findOrThrow(id: string): SkillGroup {
     const sg = this.groups.find((g) => g.id === id);
     if (!sg) {
-      throw new Error(`技能组不存在: ${id}`);
+      throw new Error(`技能组不存在: ${truncateForDisplay(id)}`);
     }
     return sg;
   }
 
-  /** 写穿落盘（IOUtils.writeJSON 默认原子写：先写临时文件再重命名） */
+  /** 写穿落盘（IOUtils.writeJSON 默认原子写：先写临时文件再重命名；经队列串行） */
   private async persist(): Promise<void> {
-    await IOUtils.writeJSON(this.path, this.groups);
+    const run: Promise<unknown> = this.persistQueue.then(() =>
+      IOUtils.writeJSON(this.path, this.groups)
+    );
+    this.persistQueue = run.then(
+      () => undefined,
+      () => undefined
+    );
+    await run;
   }
 
   /** 子集合展开所需的官方 API 是否可用 */

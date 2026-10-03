@@ -15,6 +15,7 @@
 
 import {
   DATA_DIR_NAME,
+  DEFAULT_LEASE_MS,
   type ITaskStore,
   type Task,
   type TaskCreateData,
@@ -22,7 +23,7 @@ import {
   type TaskStatus,
   uid,
 } from './types';
-import { error, log } from './utils';
+import { LIMITS, error, log, truncateForDisplay } from './utils';
 
 /** 任务文件的文件名（位于 Zotero 数据目录下 DATA_DIR_NAME 目录内） */
 const TASKS_FILE_NAME = 'tasks.json';
@@ -48,6 +49,13 @@ export class TaskStore implements ITaskStore {
 
   /** tasks.json 的绝对路径 */
   private readonly filePath: string;
+
+  /**
+   * 持久化写队列：串行化落盘。
+   * IOUtils.writeJSON 是"临时文件 + 重命名"语义，并发 persist 会共用临时文件
+   * 互相覆盖/重命名失败（如并发 claimNext）；队列保证同一时刻只有一个落盘在飞。
+   */
+  private persistQueue: Promise<void> = Promise.resolve();
 
   private constructor(filePath: string) {
     this.filePath = filePath;
@@ -95,8 +103,18 @@ export class TaskStore implements ITaskStore {
     }
   }
 
-  /** 写穿落盘：全量任务表序列化为 JSON 并原子写入。 */
+  /** 写穿落盘：全量任务表序列化为 JSON 并原子写入（经队列串行）。 */
   private async persist(): Promise<void> {
+    const run = this.persistQueue.then(() => this.writeSnapshot());
+    // 保持队列不断：本次失败不影响后续落盘；调用方仍能拿到本次的错误
+    this.persistQueue = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  private async writeSnapshot(): Promise<void> {
     try {
       await IOUtils.writeJSON(this.filePath, Array.from(this.tasks.values()));
     } catch (e) {
@@ -151,11 +169,11 @@ export class TaskStore implements ITaskStore {
     return found ? { ...found } : undefined;
   }
 
-  /** 取内部任务记录（无拷贝）；不存在时抛错。 */
+  /** 取内部任务记录（无拷贝）；不存在时抛错（id 超长时截断展示） */
   private require(id: string): Task {
     const task = this.tasks.get(id);
     if (!task) {
-      throw new Error(`任务不存在：${id}`);
+      throw new Error(`任务不存在：${truncateForDisplay(id)}`);
     }
     return task;
   }
@@ -171,6 +189,12 @@ export class TaskStore implements ITaskStore {
     const status: TaskStatus = data.status ?? 'pending';
     if (status !== 'pending' && status !== 'waiting-material') {
       throw new Error(`新建任务只允许 pending 或 waiting-material 状态，收到：${status}`);
+    }
+    if (typeof data.skillGroupId !== 'string' || !data.skillGroupId.trim()) {
+      throw new Error('创建任务失败：技能组 ID 无效');
+    }
+    if (typeof data.itemKey !== 'string' || !data.itemKey.trim()) {
+      throw new Error('创建任务失败：条目 key 无效');
     }
     const now = Date.now();
     const task: Task = {
@@ -202,6 +226,9 @@ export class TaskStore implements ITaskStore {
     skillGroupId: string | undefined,
     leaseMs: number
   ): Promise<Task | null> {
+    // 防御：非法租约时长回退到默认值，避免租约立即过期或溢出
+    const safeLeaseMs =
+      Number.isFinite(leaseMs) && leaseMs > 0 ? leaseMs : DEFAULT_LEASE_MS;
     await this.releaseExpiredLeases();
 
     let candidate: Task | undefined;
@@ -222,7 +249,7 @@ export class TaskStore implements ITaskStore {
 
     const now = Date.now();
     candidate.status = 'claimed';
-    candidate.leaseExpiresAt = now + leaseMs;
+    candidate.leaseExpiresAt = now + safeLeaseMs;
     candidate.claimedAt = now;
     candidate.attempts += 1;
 
@@ -256,12 +283,15 @@ export class TaskStore implements ITaskStore {
 
   /**
    * 完成任务：置 done、completedAt=now、记录 noteKey，并清除租约。
-   * 已 done 直接返回原任务（幂等，不重复）。
+   * 已 done 直接返回原任务（幂等：重复提交不抛错、noteKey 不变）。
    */
   async complete(id: string, noteKey: string): Promise<Task> {
     const task = this.require(id);
     if (task.status === 'done') {
       return { ...task }; // 幂等：重复提交不产生副作用
+    }
+    if (typeof noteKey !== 'string' || !noteKey.trim()) {
+      throw new Error('完成任务失败：笔记 key 无效');
     }
     task.status = 'done';
     task.completedAt = Date.now();
@@ -271,25 +301,77 @@ export class TaskStore implements ITaskStore {
     return { ...task };
   }
 
-  /** 任务失败：置 failed、记录错误信息、清除租约（attempts 保留）。 */
+  /**
+   * 任务失败：置 failed、记录错误信息、清除租约（attempts 保留，lastError 保留到下次重试）。
+   * 已完成任务不允许标记为失败（笔记已写回，状态不可回退）。
+   * 失败原因超长时抛中文错，调用方应先截断。
+   */
   async fail(id: string, errorMsg: string): Promise<Task> {
     const task = this.require(id);
+    if (task.status === 'done') {
+      throw new Error('已完成任务不能标记为失败');
+    }
+    const msg = String(errorMsg ?? '');
+    if (msg.length > LIMITS.failReason) {
+      throw new Error(`失败原因过长（最多 ${LIMITS.failReason} 字符）`);
+    }
     task.status = 'failed';
-    task.lastError = errorMsg;
+    task.lastError = msg;
     task.leaseExpiresAt = null;
     await this.persist();
     return { ...task };
   }
 
-  /** 取消任务：非 done 的置 cancelled 并清除租约；已 done 的不做任何修改。 */
+  /**
+   * 取消任务：非 done 的置 cancelled 并清除租约。
+   * 已完成任务拒绝取消并抛中文错（FR-11：已完成任务和既有笔记默认保留）。
+   */
   async cancel(id: string): Promise<void> {
     const task = this.require(id);
     if (task.status === 'done') {
-      return; // 已完成任务默认保留（FR-11）
+      throw new Error('已完成任务不能取消');
     }
     task.status = 'cancelled';
     task.leaseExpiresAt = null;
     await this.persist();
+  }
+
+  /**
+   * 内部方法：按 id 领取指定任务（MCP 领取流程用，未列入 ITaskStore 接口）。
+   * 仅当任务处于 pending 时才标记 claimed + 租约 + attempts+1 并返回；
+   * 已被并发领取走时返回 null（调用方继续试下一条），不抛错。
+   */
+  async claimById(id: string, leaseMs: number): Promise<Task | null> {
+    const task = this.tasks.get(id);
+    if (!task || task.status !== 'pending') {
+      return null;
+    }
+    // 防御：非法租约时长回退到默认值
+    const safeLeaseMs =
+      Number.isFinite(leaseMs) && leaseMs > 0 ? leaseMs : DEFAULT_LEASE_MS;
+    const now = Date.now();
+    task.status = 'claimed';
+    task.leaseExpiresAt = now + safeLeaseMs;
+    task.claimedAt = now;
+    task.attempts += 1;
+    await this.persist();
+    return { ...task };
+  }
+
+  /**
+   * 把已领取任务放回待领取（内部方法，未列入 ITaskStore 接口）：
+   * 用于"技能组在领取瞬间被停用/归档"等竞态，放回后任务可被重新领取。
+   * 只允许 claimed 状态；清除租约，attempts 保留（不算一次新的领取尝试）。
+   */
+  async requeue(id: string): Promise<Task> {
+    const task = this.require(id);
+    if (task.status !== 'claimed') {
+      throw new Error(`只有已领取任务可放回待领取，当前状态：${task.status}`);
+    }
+    task.status = 'pending';
+    task.leaseExpiresAt = null;
+    await this.persist();
+    return { ...task };
   }
 
   /** 重试失败任务：failed → pending 并清空 lastError（attempts 保留）。非 failed 状态抛错。 */
