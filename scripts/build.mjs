@@ -53,6 +53,27 @@ async function main() {
     process.exit(1);
   }
 
+  // ── Step 1b: esbuild 打包管理面板前端（模块 E：src/panel.ts → addon/content/panel.js）──
+  const panelResult = await esbuild.build({
+    entryPoints: [resolve(ROOT, 'src/panel.ts')],
+    outfile: resolve(ROOT, 'addon/content/panel.js'),
+    bundle: true,
+    format: 'iife',
+    platform: 'browser',
+    target: 'es2022',
+    sourcemap: isDev ? 'inline' : false,
+    minify: !isDev,
+    treeShaking: true,
+    legalComments: 'inline',
+    // zotero-types 仅提供类型定义，不参与运行时打包
+    external: [],
+  });
+
+  if (panelResult.errors.length) {
+    console.error('Panel build failed:', panelResult.errors);
+    process.exit(1);
+  }
+
   // 生成构建信息文件（构建产物，不进仓库）
   writeFileSync(
     resolve(ROOT, 'addon/content/build-info.json'),
@@ -68,8 +89,9 @@ async function main() {
   );
 
   const jsStats = statSync(resolve(ROOT, 'addon/content/plugin.js'));
+  const panelJsStats = statSync(resolve(ROOT, 'addon/content/panel.js'));
   console.log(
-    `✓ esbuild complete (${isDev ? 'dev' : 'production'}) — plugin.js (${formatSize(jsStats.size)})`
+    `✓ esbuild complete (${isDev ? 'dev' : 'production'}) — plugin.js (${formatSize(jsStats.size)}), panel.js (${formatSize(panelJsStats.size)})`
   );
 
   // ── Step 2: 打包 XPI ──
