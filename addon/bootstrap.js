@@ -27,7 +27,7 @@ async function startup({ id, version, rootURI }, reason) {
    * 注意：scope 里没有真实的 Zotero 全局（globalThis 是 ctx 自身），
    * 所以把 bootstrap 作用域的 Zotero/Services 等显式传进去。
    */
-  const ctx: any = { rootURI };
+  const ctx = { rootURI };
   ctx._globalThis = ctx;
   // 把真实的全局对象传进 scope（Green Frog 用 toolkit.getGlobal，这里直接传）
   try {
