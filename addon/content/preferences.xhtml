@@ -13,7 +13,8 @@
 </linkset>
 <vbox id="zotero-prefpane-skill-task"
       xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
-      xmlns:html="http://www.w3.org/1999/xhtml">
+      xmlns:html="http://www.w3.org/1999/xhtml"
+      onload="Zotero.__addonInstance__['zotero-skill-task'].hooks.onPrefsEvent('load', {window})">
 
   <groupbox>
     <label><html:h2 data-l10n-id="skill-task-prefs-mcp-section">MCP 服务</html:h2></label>

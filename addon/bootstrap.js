@@ -1,123 +1,90 @@
 /* ==========================================================================
- * bootstrap.js — Zotero 插件生命周期入口（Zotero 9/10 兼容）
+ * bootstrap.js — Zotero 插件生命周期入口
  *
- * 这是 Zotero 加载插件时调用的第一个文件。
- * 职责仅限于：加载主插件代码 → 转发生命周期事件。
- * 保持此文件精简和稳定，不做任何业务逻辑。
+ * 参照 Green Frog (redleafnew/zotero-updateifsE) 的成熟模式：
+ * - startup 解构 { id, version, rootURI }
+ * - 等待 Zotero.initializationPromise
+ * - 用 ctx 对象作为 loadSubScript 的 scope，插件实例挂在 Zotero.__addonInstance__
+ * - 通过 hooks.onStartup() / hooks.onShutdown() 调用插件逻辑
  * ========================================================================== */
 
-/* 在 bootstrap 作用域中可直接使用以下全局对象（无需 import）：
- *   Zotero, ZoteroPane, Services, Cc, Ci, Cr, Components
- * 注意：
- * - 没有 `window`（typeof window === 'undefined'），不要用 window 挂载全局。
- * - 没有全局 `rootURI`；插件根 URI 从各生命周期函数的 data.rootURI 取。
- */
+function install(data, reason) {}
 
-const PLUGIN_ID = 'zotero-skill-task@example.com';
-
-/**
- * 安全获取 PluginHook（plugin.js 加载失败时返回 undefined，不抛错）。
- * 注意：不能用 typeof PluginHook?.x 写法——PluginHook 未声明时 ?. 仍会抛 ReferenceError。
- * 也不用 globalThis（bootstrap 沙箱中不保证可用）。
- */
-function getHook() {
+async function startup({ id, version, rootURI }, reason) {
+  // 等待 Zotero 初始化完成（Green Frog 模式）
   try {
-    // typeof 对未声明变量是安全的，返回 'undefined' 而不抛错
-    if (typeof PluginHook === 'undefined') return undefined;
-    return PluginHook ?? undefined;
-  } catch {
-    return undefined;
+    await Zotero.initializationPromise;
+  } catch (e) {
+    // Zotero 9 之前可能没有 initializationPromise，继续
   }
-}
 
-/**
- * 加载编译后的主插件脚本。
- * 生成的 plugin.js 文件位于 addon/content/ 下，
- * 包含了 src/ 中所有 TS 源文件的编译产物。
- * plugin.js 用 globalThis.PluginHook 暴露实例（bootstrap 沙箱无 window）。
- */
-function loadPluginScript(rootURI) {
+  /**
+   * 插件代码的全局变量容器。
+   * loadSubScript 的第二个参数会成为被加载脚本的作用域，
+   * 脚本内所有顶层变量都会挂到这个对象上。
+   * 插件实例通过 Zotero.__addonInstance__ 暴露，供 preferences.xhtml 的 onload 回调使用。
+   */
+  const ctx = { rootURI };
+  ctx._globalThis = ctx;
+
   try {
-    if (typeof Zotero !== 'undefined' && Zotero.debug) {
-      Zotero.debug(`[SkillTask] bootstrap: loading ${rootURI}content/plugin.js`);
-    }
-    Services.scriptloader.loadSubScript(rootURI + 'content/plugin.js');
-    if (typeof Zotero !== 'undefined' && Zotero.debug) {
-      Zotero.debug('[SkillTask] bootstrap: plugin.js loaded');
+    Services.scriptloader.loadSubScript(rootURI + 'content/plugin.js', ctx);
+  } catch (e) {
+    Components.utils.reportError(
+      `[zotero-skill-task] Failed to load plugin script: ${e.message}\n${e.stack}`
+    );
+    return;
+  }
+
+  // 调用插件的启动钩子（Green Frog: Zotero.__addonInstance__.hooks.onStartup()）
+  try {
+    const inst = Zotero.__addonInstance__?.['zotero-skill-task'];
+    if (inst && inst.hooks && typeof inst.hooks.onStartup === 'function') {
+      await inst.hooks.onStartup({ id, version, rootURI }, reason);
     }
   } catch (e) {
     Components.utils.reportError(
-      `[${PLUGIN_ID}] Failed to load plugin script: ${e.message}\n${e.stack}`
+      `[zotero-skill-task] onStartup failed: ${e.message}\n${e.stack}`
     );
   }
 }
 
-/**
- * 插件安装/更新时调用。
- * @param {Object}   data   - { id, version, rootURI }
- * @param {number}   reason - APP_STARTUP | ADDON_INSTALL | ADDON_UPGRADE | ADDON_DOWNGRADE
- */
-function install(data, reason) {
-  loadPluginScript(data.rootURI);
-  const hook = getHook();
-  if (hook && typeof hook.install === 'function') {
-    hook.install(data, reason);
+async function onMainWindowLoad({ window }, reason) {
+  try {
+    const inst = Zotero.__addonInstance__?.['zotero-skill-task'];
+    if (inst && inst.hooks && typeof inst.hooks.onMainWindowLoad === 'function') {
+      await inst.hooks.onMainWindowLoad(window, reason);
+    }
+  } catch (e) {
+    Components.utils.reportError(
+      `[zotero-skill-task] onMainWindowLoad failed: ${e.message}\n${e.stack}`
+    );
   }
 }
 
-/**
- * 插件启动时调用（Zotero 启动/插件启用）。
- * @param {Object} data   - { id, version, rootURI }
- * @param {number} reason - APP_STARTUP | ADDON_ENABLE | ADDON_UPGRADE | ADDON_DOWNGRADE
- */
-function startup(data, reason) {
+async function onMainWindowUnload({ window }, reason) {
   try {
-    if (typeof Zotero !== 'undefined' && Zotero.debug) {
-      Zotero.debug(`[SkillTask] bootstrap: startup called, rootURI=${data.rootURI}`);
+    const inst = Zotero.__addonInstance__?.['zotero-skill-task'];
+    if (inst && inst.hooks && typeof inst.hooks.onMainWindowUnload === 'function') {
+      await inst.hooks.onMainWindowUnload(window, reason);
     }
-  } catch {
+  } catch (e) {
     // ignore
-  }
-  loadPluginScript(data.rootURI);
-  const hook = getHook();
-  try {
-    if (typeof Zotero !== 'undefined' && Zotero.debug) {
-      Zotero.debug(`[SkillTask] bootstrap: getHook() returned ${hook ? 'object' : String(hook)}`);
-    }
-  } catch {
-    // ignore
-  }
-  if (hook && typeof hook.startup === 'function') {
-    hook.startup(data, reason);
-    if (typeof hook.addToAllWindows === 'function') {
-      hook.addToAllWindows();
-    }
   }
 }
 
-/**
- * 插件关闭时调用（Zotero 关闭/插件禁用）。
- * @param {Object} data   - { id, version, rootURI }
- * @param {number} reason - APP_SHUTDOWN | ADDON_DISABLE
- */
 function shutdown(data, reason) {
-  const hook = getHook();
-  if (hook && typeof hook.shutdown === 'function') {
-    if (typeof hook.removeFromAllWindows === 'function') {
-      hook.removeFromAllWindows();
+  if (reason === APP_SHUTDOWN) {
+    return;
+  }
+  try {
+    const inst = Zotero.__addonInstance__?.['zotero-skill-task'];
+    if (inst && inst.hooks && typeof inst.hooks.onShutdown === 'function') {
+      inst.hooks.onShutdown(data, reason);
     }
-    hook.shutdown(data, reason);
+  } catch (e) {
+    // ignore
   }
 }
 
-/**
- * 插件卸载时调用。
- * @param {Object} data   - { id, version, rootURI }
- * @param {number} reason - APP_UNINSTALL | ADDON_UNINSTALL | ADDON_DOWNGRADE
- */
-function uninstall(data, reason) {
-  const hook = getHook();
-  if (hook && typeof hook.uninstall === 'function') {
-    hook.uninstall(data, reason);
-  }
-}
+function uninstall(data, reason) {}
