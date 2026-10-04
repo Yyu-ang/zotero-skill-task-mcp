@@ -52,7 +52,7 @@ async function startup({ id, version, rootURI }, reason) {
 
   // 调用插件的启动钩子（Green Frog: Zotero.__addonInstance__.hooks.onStartup()）
   try {
-    const inst = Zotero.__addonInstance__?.['zotero-skill-task'];
+    const inst = Zotero['zotero-skill-task'];
     if (inst && inst.hooks && typeof inst.hooks.onStartup === 'function') {
       await inst.hooks.onStartup({ id, version, rootURI }, reason);
     }
@@ -65,7 +65,7 @@ async function startup({ id, version, rootURI }, reason) {
 
 async function onMainWindowLoad({ window }, reason) {
   try {
-    const inst = Zotero.__addonInstance__?.['zotero-skill-task'];
+    const inst = Zotero['zotero-skill-task'];
     if (inst && inst.hooks && typeof inst.hooks.onMainWindowLoad === 'function') {
       await inst.hooks.onMainWindowLoad(window, reason);
     }
@@ -78,7 +78,7 @@ async function onMainWindowLoad({ window }, reason) {
 
 async function onMainWindowUnload({ window }, reason) {
   try {
-    const inst = Zotero.__addonInstance__?.['zotero-skill-task'];
+    const inst = Zotero['zotero-skill-task'];
     if (inst && inst.hooks && typeof inst.hooks.onMainWindowUnload === 'function') {
       await inst.hooks.onMainWindowUnload(window, reason);
     }
@@ -92,7 +92,7 @@ function shutdown(data, reason) {
     return;
   }
   try {
-    const inst = Zotero.__addonInstance__?.['zotero-skill-task'];
+    const inst = Zotero['zotero-skill-task'];
     if (inst && inst.hooks && typeof inst.hooks.onShutdown === 'function') {
       inst.hooks.onShutdown(data, reason);
     }
