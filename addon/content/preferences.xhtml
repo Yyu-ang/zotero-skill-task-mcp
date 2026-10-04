@@ -1,7 +1,6 @@
-<?xml version="1.0" encoding="UTF-8"?>
 <!--
-  addon/content/preferences.xhtml — 插件设置面板片段
-
+  addon/content/preferences.xhtml — 插件设置面板片段（XUL fragment）
+  注意：fragment 不能带 <?xml ...?> 声明，否则 parseXULToFragment 报 "not well-formed XML"
   由 Zotero.PreferencePanes.register 加载（defaultXUL: true）。
   参照 Green Frog 模式：原生 XUL 元素（vbox/groupbox/hbox/checkbox/label/description），
   简单设置项用 preference 属性做 Zotero 原生偏好绑定（无需 JS）；
