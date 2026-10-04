@@ -23,9 +23,23 @@ async function startup({ id, version, rootURI }, reason) {
    * loadSubScript 的第二个参数会成为被加载脚本的作用域，
    * 脚本内所有顶层变量都会挂到这个对象上。
    * 插件实例通过 Zotero.__addonInstance__ 暴露，供 preferences.xhtml 的 onload 回调使用。
+   *
+   * 注意：scope 里没有真实的 Zotero 全局（globalThis 是 ctx 自身），
+   * 所以把 bootstrap 作用域的 Zotero/Services 等显式传进去。
    */
-  const ctx = { rootURI };
+  const ctx: any = { rootURI };
   ctx._globalThis = ctx;
+  // 把真实的全局对象传进 scope（Green Frog 用 toolkit.getGlobal，这里直接传）
+  try {
+    ctx.Zotero = Zotero;
+  } catch {
+    // ignore
+  }
+  try {
+    ctx.Services = Services;
+  } catch {
+    // ignore
+  }
 
   try {
     Services.scriptloader.loadSubScript(rootURI + 'content/plugin.js', ctx);

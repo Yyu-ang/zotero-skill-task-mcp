@@ -19,7 +19,11 @@ const plugin = new PluginCore();
 // preferences.xhtml 用 onload="Zotero.__addonInstance__['zotero-skill-task'].hooks.onPrefsEvent('load', {window})"
 // 回调到这里，避免单独的 preferences.js 沙箱问题。
 try {
-  const Z = (globalThis as any).Zotero;
+  // bootstrap.js 经 loadSubScript 的 ctx scope 把真实 Zotero 传进来（ctx.Zotero）
+  // 直接用全局 Zotero（如果可用），否则用 scope 传入的
+  const Z: any =
+    (globalThis as any).Zotero ??
+    (typeof Zotero !== 'undefined' ? (Zotero as any) : undefined);
   if (Z) {
     if (!Z.__addonInstance__) {
       Z.__addonInstance__ = {};
@@ -35,6 +39,8 @@ try {
       },
     };
     log('Skill Task: registered on Zotero.__addonInstance__');
+  } else {
+    log('Skill Task: Zotero global not found, __addonInstance__ not set');
   }
 } catch (e) {
   log(`Skill Task: failed to register __addonInstance__: ${e}`);
