@@ -303,6 +303,9 @@ export interface IMcpServer {
   /** 返回现有 token；没有则生成并持久化 */
   ensureToken(): string;
   regenerateToken(): string;
+  /** 访问凭据是否启用（可选项，默认关闭） */
+  isTokenEnabled(): boolean;
+  setTokenEnabled(v: boolean): void;
   getStatus(): {
     enabled: boolean;
     path: string;

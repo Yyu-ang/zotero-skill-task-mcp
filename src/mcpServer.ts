@@ -55,6 +55,8 @@ const MCP_PATH = '/skilltask/mcp';
 const PREF_MCP_ENABLED = 'extensions.zotero-skill-task.mcp.enabled';
 /** Bearer token 存储键（由 ensureToken 生成/持久化） */
 const PREF_MCP_TOKEN = 'extensions.zotero-skill-task.mcp.token';
+/** 访问凭据开关（可选项，默认关闭；关闭时 MCP 接口无需鉴权） */
+const PREF_MCP_TOKEN_ENABLED = 'extensions.zotero-skill-task.mcp.tokenEnabled';
 /** 响应的 MCP 协议版本 */
 const MCP_PROTOCOL_VERSION = '2024-11-05';
 /** JSON-RPC 错误码 */
@@ -373,6 +375,21 @@ export class McpServer implements IMcpServer {
     return token;
   }
 
+  /** 访问凭据是否启用（可选项，默认关闭） */
+  isTokenEnabled(): boolean {
+    return !!prefs.get(PREF_MCP_TOKEN_ENABLED, false);
+  }
+
+  /** 设置访问凭据开关 */
+  setTokenEnabled(v: boolean): void {
+    try {
+      prefs.set(PREF_MCP_TOKEN_ENABLED, v);
+    } catch (e) {
+      throw new Error(`访问凭据开关保存失败：${errMsg(e)}`);
+    }
+    log(`MCP token auth ${v ? 'enabled' : 'disabled'}`);
+  }
+
   /**
    * 服务状态：绝不抛错（端口探测失败返回 null，由调用方展示为"未知"）。
    */
@@ -401,15 +418,17 @@ export class McpServer implements IMcpServer {
         JSON.stringify({ error: 'mcp-disabled' }),
       ];
     }
-    // ② Bearer 鉴权：常量时间比较，缺失/错误一律 401
-    const expected = String(prefs.get(PREF_MCP_TOKEN, '') ?? '');
-    const got = extractBearer(requestData?.headers);
-    if (!expected || !timingSafeEqual(got, expected)) {
-      return [
-        401,
-        'application/json',
-        JSON.stringify({ error: 'unauthorized' }),
-      ];
+    // ② Bearer 鉴权（可选项）：仅在启用访问凭据时校验；关闭时跳过
+    if (this.isTokenEnabled()) {
+      const expected = String(prefs.get(PREF_MCP_TOKEN, '') ?? '');
+      const got = extractBearer(requestData?.headers);
+      if (!expected || !timingSafeEqual(got, expected)) {
+        return [
+          401,
+          'application/json',
+          JSON.stringify({ error: 'unauthorized' }),
+        ];
+      }
     }
     // ③ JSON-RPC 解析
     let rpc: any;

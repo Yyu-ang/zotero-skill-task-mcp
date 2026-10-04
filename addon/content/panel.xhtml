@@ -497,6 +497,23 @@
     <button class="btn" id="btn-notready-retry"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>重新加载</button>
   </div>
 
+  <script>
+  // 全局错误捕获：panel.js 加载失败或顶层抛错时，在页面上显示错误而非空白
+  window.addEventListener('error', function(e) {
+    try {
+      var box = document.getElementById('error-box');
+      var txt = document.getElementById('error-text');
+      if (box && txt) {
+        txt.textContent = '面板加载失败: ' + (e.message || e.error || '未知错误');
+        box.hidden = false;
+      } else {
+        // 连 error-box 都没有，直接写 body
+        document.body.innerHTML = '<div style="padding:20px;color:#c00;">面板加载失败: ' +
+          String(e.message || e.error || '未知错误').replace(/</g, '&lt;') + '</div>';
+      }
+    } catch (_) {}
+  }, true);
+  </script>
   <script src="panel.js"></script>
 </body>
 </html>

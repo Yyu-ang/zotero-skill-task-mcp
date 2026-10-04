@@ -13,7 +13,7 @@ export const PREFS = {
   ENABLED: 'extensions.zotero-skill-task.enabled',
   /** 任务领取租约时长（分钟），默认 30；修改实时生效 */
   TASK_LEASE_MINUTES: 'extensions.zotero-skill-task.task.leaseMinutes',
-  /** 文件交付物大小上限（MB），默认 50，硬上限 200；修改实时生效 */
+  /** 文件交付物大小上限（MB），默认 50；修改实时生效 */
   DELIVERABLE_MAX_FILE_MB: 'extensions.zotero-skill-task.deliverable.maxFileMB',
   /** 面板快捷键总开关，默认 true；修改实时生效（需求单 需求6） */
   SHORTCUT_ENABLED: 'extensions.zotero-skill-task.shortcut.enabled',
@@ -97,14 +97,12 @@ export function getLeaseMs(): number {
 }
 
 /**
- * 当前文件交付物大小上限（字节）：读偏好（MB），钳制在硬上限内。
+ * 当前文件交付物大小上限（字节）：读偏好（MB）。
  * 设置页修改后实时生效，无需重启。
  */
 export function getDeliverableMaxBytes(): number {
-  const hardCapMB = Math.floor(LIMITS.deliverableFileHardCapBytes / 1048576);
   const mb = Number(prefs.get(PREFS.DELIVERABLE_MAX_FILE_MB, 50));
-  const safeMB =
-    Number.isFinite(mb) && mb > 0 ? Math.min(mb, hardCapMB) : 50;
+  const safeMB = Number.isFinite(mb) && mb > 0 ? mb : 50;
   return Math.floor(safeMB * 1048576);
 }
 

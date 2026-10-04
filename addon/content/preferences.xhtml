@@ -27,9 +27,21 @@
     <hbox align="center">
       <label data-l10n-id="skill-task-prefs-mcp-addr">服务地址</label>
       <label id="st-mcp-addr" style="font-family: monospace;">—</label>
+      <button id="st-mcp-addr-copy"
+              data-l10n-id="skill-task-prefs-addr-copy" label="复制"/>
     </hbox>
 
     <hbox align="center">
+      <label data-l10n-id="skill-task-prefs-mcp-port" for="st-mcp-port">端口（修改后需重启 Zotero）</label>
+      <html:input id="st-mcp-port" type="number" min="1" max="65535" step="1" style="width: 6em;"/>
+    </hbox>
+
+    <hbox align="center">
+      <checkbox id="st-mcp-token-enabled" native="true"
+                data-l10n-id="skill-task-prefs-token-enable" label="启用访问凭据（可选）"/>
+    </hbox>
+
+    <hbox align="center" id="st-mcp-token-row">
       <label data-l10n-id="skill-task-prefs-mcp-token">访问凭据</label>
       <label id="st-mcp-token-state">—</label>
       <button id="st-mcp-token-show"
@@ -39,7 +51,7 @@
     </hbox>
     <html:input id="st-mcp-token-value" type="text" readonly="readonly" hidden="hidden"/>
 
-    <description data-l10n-id="skill-task-prefs-token-hint">凭据只在需要时显示；重新生成后旧凭据立即失效。请勿记入日志或随意分享。</description>
+    <description data-l10n-id="skill-task-prefs-token-hint">凭据为可选项；不启用时 MCP 接口无需鉴权。启用后重新生成将使旧凭据立即失效，请勿记入日志或随意分享。</description>
     <description id="st-err" hidden="true" style="color: #c00;"/>
   </groupbox>
 
@@ -55,11 +67,11 @@
 
     <hbox align="center">
       <label data-l10n-id="skill-task-prefs-maxfile" for="st-maxfile-mb">文件交付大小上限（MB）</label>
-      <html:input type="number" id="st-maxfile-mb" min="1" max="200" step="1"
+      <html:input type="number" id="st-maxfile-mb" min="1" step="1"
                   preference="extensions.zotero-skill-task.deliverable.maxFileMB"/>
     </hbox>
 
-    <description data-l10n-id="skill-task-prefs-task-hint">修改实时生效，无需重启；文件上限硬封顶 200MB。</description>
+    <description data-l10n-id="skill-task-prefs-task-hint">修改实时生效，无需重启。</description>
   </groupbox>
 
   <groupbox>

@@ -59,11 +59,9 @@ describe('assertValidDeliverable', () => {
       /非法/
     );
   });
-  test('file maxBytes 超硬上限抛错', () => {
-    assert.throws(
-      () => D.assertValidDeliverable({ type: 'file', maxBytes: 300 * 1048576 }),
-      /硬上限/
-    );
+  test('file maxBytes 大值不再抛错（硬上限已移除）', () => {
+    const d = D.assertValidDeliverable({ type: 'file', maxBytes: 300 * 1048576 });
+    assert.equal(d.maxBytes, 300 * 1048576);
   });
   test('markdown target=note/file 通过', () => {
     assert.deepEqual(

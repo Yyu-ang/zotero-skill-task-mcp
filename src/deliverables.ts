@@ -79,12 +79,6 @@ export function assertValidDeliverable(input: unknown): SkillDeliverable {
       if (!Number.isInteger(fd.maxBytes) || fd.maxBytes <= 0) {
         throw new Error('交付物配置无效：maxBytes 须为正整数');
       }
-      if (fd.maxBytes > LIMITS.deliverableFileHardCapBytes) {
-        throw new Error(
-          `交付物配置无效：maxBytes 超过硬上限 ` +
-            `${Math.floor(LIMITS.deliverableFileHardCapBytes / 1048576)}MB`
-        );
-      }
       out.maxBytes = fd.maxBytes;
     }
     return out;
@@ -123,8 +117,7 @@ export function resolveMaxBytes(d: FileDeliverable): number {
   if (
     typeof d.maxBytes === 'number' &&
     Number.isInteger(d.maxBytes) &&
-    d.maxBytes > 0 &&
-    d.maxBytes <= LIMITS.deliverableFileHardCapBytes
+    d.maxBytes > 0
   ) {
     return d.maxBytes;
   }

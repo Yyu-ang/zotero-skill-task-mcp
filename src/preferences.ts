@@ -125,6 +125,83 @@ function init(): void {
         enableEl.checked = !!api.mcp.isEnabled?.();
       }
       refreshMcpStatus();
+
+  // ── 服务地址：复制按钮 ──
+  const addrCopyBtn = $('st-mcp-addr-copy');
+  if (addrCopyBtn) {
+    addrCopyBtn.addEventListener('command', async () => {
+      clearError();
+      try {
+        const addrEl = $('st-mcp-addr');
+        const addr = addrEl?.textContent?.trim();
+        if (addr && addr !== '—') {
+          const ok = await copyText(addr);
+          if (!ok) showError(getString('prefs-token-copy-fail'));
+        }
+      } catch (e: any) {
+        showError(getString('prefs-save-fail', { error: errMsg(e) }));
+      }
+    });
+  }
+
+  // ── 端口：读写 Zotero 的 httpServer.port（修改后需重启生效） ──
+  const portInput = $('st-mcp-port') as HTMLInputElement | null;
+  if (portInput) {
+    try {
+      const curPort = (Zotero as any).Prefs.get('httpServer.port', true);
+      if (typeof curPort === 'number' && curPort > 0) {
+        portInput.value = String(curPort);
+      }
+    } catch {
+      // ignore
+    }
+    portInput.addEventListener('change', () => {
+      clearError();
+      const v = parseInt(portInput.value, 10);
+      if (!Number.isInteger(v) || v < 1 || v > 65535) {
+        showError(getString('prefs-port-invalid'));
+        return;
+      }
+      try {
+        (Zotero as any).Prefs.set('httpServer.port', v, true);
+        refreshMcpStatus();
+      } catch (e: any) {
+        showError(getString('prefs-save-fail', { error: errMsg(e) }));
+      }
+    });
+  }
+
+  // ── 访问凭据启用开关（可选项，默认关闭） ──
+  const tokenEnabledEl = $('st-mcp-token-enabled') as any;
+  const tokenRow = $('st-mcp-token-row');
+  const updateTokenRowVisibility = () => {
+    const enabled = !!tokenEnabledEl?.checked;
+    if (tokenRow) (tokenRow as HTMLElement).hidden = !enabled;
+    const hint = document.querySelector('[data-l10n-id="skill-task-prefs-token-hint"]');
+    // hint 始终显示，无需处理
+  };
+  if (tokenEnabledEl) {
+    try {
+      tokenEnabledEl.checked = !!api.mcp.isTokenEnabled?.();
+    } catch {
+      tokenEnabledEl.checked = false;
+    }
+    updateTokenRowVisibility();
+    tokenEnabledEl.addEventListener('command', () => {
+      clearError();
+      try {
+        api.mcp.setTokenEnabled(!!tokenEnabledEl.checked);
+      } catch (e: any) {
+        showError(getString('prefs-save-fail', { error: errMsg(e) }));
+        try {
+          tokenEnabledEl.checked = !!api.mcp.isTokenEnabled?.();
+        } catch {
+          // ignore
+        }
+      }
+      updateTokenRowVisibility();
+    });
+  }
     });
   }
   refreshMcpStatus();
