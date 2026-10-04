@@ -6,7 +6,6 @@
  *
  * 用法：node scripts/test-deliverables.mjs  （或 npm test）
  */
-import { execSync } from 'child_process';
 import { mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, dirname } from 'path';
@@ -19,11 +18,15 @@ const ROOT = join(__dirname, '..');
 
 const tmp = mkdtempSync(join(tmpdir(), 'deliv-test-'));
 const bundle = join(tmp, 'deliverables.bundle.mjs');
-execSync(
-  `"${join(ROOT, 'node_modules', '.bin', 'esbuild')}" ` +
-    `"${join(ROOT, 'src', 'deliverables.ts')}" --bundle --format=esm --outfile="${bundle}" --log-level=error`,
-  { stdio: 'inherit' }
-);
+// 用 esbuild JS API（跨平台；Windows 下直接调 .bin/esbuild 二进制路径不可靠）
+const esbuild = await import('esbuild');
+await esbuild.build({
+  entryPoints: [join(ROOT, 'src', 'deliverables.ts')],
+  bundle: true,
+  format: 'esm',
+  outfile: bundle,
+  logLevel: 'error',
+});
 const D = await import(bundle);
 
 // —— 辅助 ——

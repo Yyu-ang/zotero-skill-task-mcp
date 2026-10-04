@@ -17,6 +17,7 @@ import {
   statSync,
   mkdirSync,
   rmSync,
+  cpSync,
 } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -135,12 +136,17 @@ async function main() {
   // 版本号同步：把 package.json 的版本写入 manifest 的暂存副本再打包，
   // 保持源码树 addon/manifest.json 不被修改（git 树干净）。
   // 背景：曾出现 XPI 文件名/Release 是 0.3.0 但包内 manifest 仍写 0.1.0 的问题。
+  // dev 模式跳过 XPI 打包（serve.mjs 用源码代理加载，不需要 XPI）
+  if (isDev) {
+    const elapsed = Date.now() - start;
+    console.log(`✓ Build done in ${elapsed}ms (dev: 跳过 XPI 打包)`);
+    return;
+  }
   const STAGE_DIR = resolve(DIST_DIR, '.stage');
   rmSync(STAGE_DIR, { recursive: true, force: true });
   mkdirSync(STAGE_DIR, { recursive: true });
-  execSync(`cp -r "${resolve(ROOT, 'addon')}/." "${STAGE_DIR}/"`, {
-    stdio: 'pipe',
-  });
+  // 跨平台拷贝（Windows 无 cp 命令）
+  cpSync(resolve(ROOT, 'addon'), STAGE_DIR, { recursive: true });
   const stageManifestPath = resolve(STAGE_DIR, 'manifest.json');
   const stageManifest = JSON.parse(readFileSync(stageManifestPath, 'utf-8'));
   stageManifest.version = pkg.version;
@@ -149,15 +155,134 @@ async function main() {
   mkdirSync(DIST_DIR, { recursive: true });
   const xpiPath = resolve(DIST_DIR, XPI_NAME);
   rmSync(xpiPath, { force: true });
-  execSync(`cd "${STAGE_DIR}" && zip -qr "${xpiPath}" . -x "*.DS_Store"`, {
-    stdio: 'pipe',
-  });
+  // 跨平台 ZIP 打包（Windows 无 zip 命令）：纯 JS 实现，DEFLATE 压缩
+  await createZip(STAGE_DIR, xpiPath);
   rmSync(STAGE_DIR, { recursive: true, force: true });
   const xpiStats = statSync(xpiPath);
 
   const elapsed = Date.now() - start;
   console.log(`✓ XPI packaged: dist/${XPI_NAME} (${formatSize(xpiStats.size)})`);
   console.log(`✓ Build done in ${elapsed}ms`);
+}
+
+/**
+ * 最小 ZIP 打包器（XPI 本质是 ZIP）。
+ * 纯 Node 实现（zlib/deflateRaw），跨平台，无第三方依赖。
+ * 支持：多文件、目录项、DEFLATE 压缩、UTF-8 文件名。
+ */
+async function createZip(srcDir, outPath) {
+  const { deflateRawSync, crc32 } = await import('zlib');
+  const { readdirSync, statSync, readFileSync } = await import('fs');
+  const { relative, join, sep } = await import('path');
+
+  // 递归收集文件（跳过 .DS_Store），路径统一用 / 分隔
+  function collect(dir, out = []) {
+    for (const name of readdirSync(dir)) {
+      if (name === '.DS_Store') continue;
+      const full = join(dir, name);
+      const st = statSync(full);
+      if (st.isDirectory()) {
+        collect(full, out);
+      } else {
+        out.push(full);
+      }
+    }
+    return out;
+  }
+
+  const files = collect(srcDir).sort();
+  const chunks = []; // 输出 buffer 块
+  const central = []; // 中央目录项
+  let offset = 0;
+
+  const writeU16 = (n) => {
+    const b = Buffer.alloc(2);
+    b.writeUInt16LE(n, 0);
+    return b;
+  };
+  const writeU32 = (n) => {
+    const b = Buffer.alloc(4);
+    b.writeUInt32LE(n >>> 0, 0);
+    return b;
+  };
+
+  for (const full of files) {
+    const rel = relative(srcDir, full).split(sep).join('/');
+    const nameBuf = Buffer.from(rel, 'utf8');
+    const data = readFileSync(full);
+    const compressed = deflateRawSync(data, { level: 9 });
+    const crc = crc32(data) >>> 0;
+
+    // Local file header
+    const lfh = Buffer.concat([
+      writeU32(0x04034b50), // signature
+      writeU16(20), // version needed
+      writeU16(0x0800), // flags: UTF-8
+      writeU16(8), // method: deflate
+      writeU16(0), // mod time
+      writeU16(0), // mod date
+      writeU32(crc),
+      writeU32(compressed.length),
+      writeU32(data.length),
+      writeU16(nameBuf.length),
+      writeU16(0), // extra len
+      nameBuf,
+    ]);
+    chunks.push(lfh, compressed);
+
+    central.push({
+      rel,
+      nameBuf,
+      crc,
+      compLen: compressed.length,
+      uncompLen: data.length,
+      offset,
+    });
+    offset += lfh.length + compressed.length;
+  }
+
+  const centralStart = offset;
+  for (const e of central) {
+    const cdh = Buffer.concat([
+      writeU32(0x02014b50), // signature
+      writeU16(20), // version made by
+      writeU16(20), // version needed
+      writeU16(0x0800), // flags: UTF-8
+      writeU16(8), // method
+      writeU16(0), // time
+      writeU16(0), // date
+      writeU32(e.crc),
+      writeU32(e.compLen),
+      writeU32(e.uncompLen),
+      writeU16(e.nameBuf.length),
+      writeU16(0), // extra
+      writeU16(0), // comment
+      writeU16(0), // disk
+      writeU16(0), // int attrs
+      writeU32(0), // ext attrs
+      writeU32(e.offset),
+      e.nameBuf,
+    ]);
+    chunks.push(cdh);
+    offset += cdh.length;
+  }
+  const centralLen = offset - centralStart;
+
+  // End of central directory
+  const eocd = Buffer.concat([
+    writeU32(0x06054b50),
+    writeU16(0), // disk
+    writeU16(0), // cd disk
+    writeU16(central.length),
+    writeU16(central.length),
+    writeU32(centralLen),
+    writeU32(centralStart),
+    writeU16(0), // comment len
+  ]);
+  chunks.push(eocd);
+
+  const { writeFileSync } = await import('fs');
+  writeFileSync(outPath, Buffer.concat(chunks));
 }
 
 function formatSize(bytes) {

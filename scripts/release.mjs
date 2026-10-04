@@ -40,12 +40,11 @@ async function main() {
     throw new Error(`XPI not found: ${xpiPath}`);
   }
 
-  // 2. 计算 SHA-256 哈希
+  // 2. 计算 SHA-256 哈希（Node 内置 crypto，跨平台；Windows 无 shasum）
   console.log('🔐 Step 2: Computing hash...');
-  const hash = execSync(`shasum -a 256 "${xpiPath}"`, {
-    encoding: 'utf-8',
-    cwd: ROOT,
-  }).split(' ')[0];
+  const { createHash } = await import('crypto');
+  const { readFileSync } = await import('fs');
+  const hash = createHash('sha256').update(readFileSync(xpiPath)).digest('hex');
   console.log(`   SHA-256: ${hash}`);
 
   // 3. 生成 update.json
