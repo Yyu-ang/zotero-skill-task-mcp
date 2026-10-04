@@ -9,7 +9,11 @@ addon/content/plugin.js
 addon/content/plugin.js.map
 addon/content/panel.js
 addon/content/panel.js.map
+addon/content/preferences.js
+addon/content/preferences.js.map
 addon/content/build-info.json
+# gen-locale.mjs 生成的（构建时自动生成）
+src/utils/locale-data.ts
 
 # 系统 / 日志
 .DS_Store
