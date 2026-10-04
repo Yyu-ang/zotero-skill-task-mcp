@@ -28,13 +28,21 @@ import type {
   ISkillGroupStore,
   ITaskStore,
   MaterialPackage,
+  SkillDeliverable,
   SkillGroup,
   SubmitResult,
+  Task,
 } from './types';
-import { DEFAULT_LEASE_MS } from './types';
+import { DEFAULT_LEASE_MS, DATA_DIR_NAME } from './types';
 import { resolveEarliestPdfPath } from './taskGenerator';
 import { prefs } from './prefs';
 import { LIMITS, error as logError, log, truncateForDisplay } from './utils';
+import {
+  DELIVERABLES_DIR_NAME,
+  normalizeDeliverable,
+  validateSubmitParams,
+  type ValidatedSubmission,
+} from './deliverables';
 
 // Firefox chrome 特权环境里运行时可用，但 zotero-types 未声明，这里补声明
 declare const DOMParser: any;
@@ -447,7 +455,8 @@ export class McpServer implements IMcpServer {
                 name: 'skilltask_claim',
                 description:
                   '从技能组任务队列中领取下一条待处理任务。每次调用至多返回一条任务；' +
-                  '无可领取任务时返回空队列结果（message 为 empty-queue）。',
+                  '无可领取任务时返回空队列结果（message 为 empty-queue）。' +
+                  '返回含 deliverable（该技能组声明的交付物 schema），提交时须按其格式。',
                 inputSchema: {
                   type: 'object',
                   properties: {
@@ -462,9 +471,13 @@ export class McpServer implements IMcpServer {
               {
                 name: 'skilltask_submit',
                 description:
-                  '提交任务结果（Zotero 内建笔记 HTML 内容）。成功后插件在任务关联的' +
-                  '父条目下创建一条内建笔记并把任务标记为完成；重复提交同一任务幂等返回，' +
-                  '不会创建第二条笔记。',
+                  '提交任务结果。按领取时返回的 deliverable schema 选择参数：' +
+                  'note → noteHtml（HTML，脚本/事件属性会被清理）；' +
+                  'markdown → markdown（文本）；' +
+                  'file → fileName + contentBase64（base64 文件内容，存入受控目录，' +
+                  '可按技能组配置自动挂成条目附件）。' +
+                  '成功后任务标记为完成；重复提交同一任务幂等返回，' +
+                  '不会产生第二条笔记/第二个文件。',
                 inputSchema: {
                   type: 'object',
                   properties: {
@@ -475,10 +488,25 @@ export class McpServer implements IMcpServer {
                     noteHtml: {
                       type: 'string',
                       description:
-                        '要写入 Zotero 内建笔记的 HTML 内容（脚本/事件属性会被清理）。',
+                        '交付物为 note 时：要写入 Zotero 内建笔记的 HTML 内容。',
+                    },
+                    markdown: {
+                      type: 'string',
+                      description:
+                        '交付物为 markdown 时：Markdown 文本（按技能组配置转笔记或存文件）。',
+                    },
+                    fileName: {
+                      type: 'string',
+                      description:
+                        '交付物为 file（或 markdown 存文件）时：文件名（含扩展名，须在白名单内）。',
+                    },
+                    contentBase64: {
+                      type: 'string',
+                      description:
+                        '交付物为 file 时：文件内容的 base64 编码。',
                     },
                   },
-                  required: ['taskId', 'noteHtml'],
+                  required: ['taskId'],
                 },
               },
             ],
@@ -618,6 +646,8 @@ export class McpServer implements IMcpServer {
           instruction: task.instructionSnapshot,
           itemKey: task.itemKey,
           leaseExpiresAt: task.leaseExpiresAt ?? Date.now() + DEFAULT_LEASE_MS,
+          // FR-07：领取结果携带交付物 schema，提交时须按此格式
+          deliverable: normalizeDeliverable(sg.deliverable),
         },
         materials,
       };
@@ -736,10 +766,13 @@ export class McpServer implements IMcpServer {
   /**
    * 提交结果（FR-08）：
    * - 校验 taskId 存在、任务处于 claimed 状态、租约未过期
-   * - noteHtml 清理后为空 → 拒绝
-   * - 笔记写入任务关联的父条目下（new Zotero.Item('note') + parentID）
-   * - 成功后 tasks.complete 标记完成；写回抛错 → tasks.fail 保留未完成可重试
-   * - 已完成 + 有 noteKey → 幂等返回，不建第二条笔记
+   * - 按技能组声明的交付物 schema 校验提交参数：
+   *   note → noteHtml（清理后为空则拒绝）；
+   *   markdown → markdown 文本（target=note 转 HTML 写笔记，target=file 存 .md）；
+   *   file → fileName + contentBase64（写受控输出目录，可选挂附件）
+   * - 成功后 tasks.complete 标记完成并记录交付物引用；写回抛错 → tasks.fail
+   *   保留未完成可重试
+   * - 已完成 + 有交付物引用 → 幂等返回，不产生第二个交付物
    */
   private async submit(params: any): Promise<SubmitResult> {
     // 防御：taskId 必须为非空字符串（外部输入先做类型守卫）
@@ -752,9 +785,18 @@ export class McpServer implements IMcpServer {
     if (!task) {
       return { ok: false, error: 'task-not-found' };
     }
-    // 幂等：已完成且已有笔记 key，直接返回（不建第二条笔记）
+    // 幂等：已完成且已有交付物引用，直接返回（不产生第二个交付物）
+    if (task.status === 'done' && task.deliverableRef) {
+      return this.duplicateResult(task);
+    }
+    // 历史兼容：v1 老任务 done + noteKey（无 deliverableRef）
     if (task.status === 'done' && task.noteKey) {
-      return { ok: true, noteKey: task.noteKey, duplicate: true };
+      return {
+        ok: true,
+        noteKey: task.noteKey,
+        deliverableType: 'note',
+        duplicate: true,
+      };
     }
     if (task.status !== 'claimed') {
       return { ok: false, error: `task-not-claimed:${task.status}` };
@@ -771,15 +813,19 @@ export class McpServer implements IMcpServer {
       }
       return { ok: false, error: 'lease-expired' };
     }
-    // 防御：超大笔记直接拒绝，避免 DOM 清理流程被卡死
-    const rawNote = params?.noteHtml;
-    if (typeof rawNote === 'string' && rawNote.length > LIMITS.noteHtml) {
-      return { ok: false, error: 'note-too-large' };
+    // 技能组被硬删除：任务成孤儿，标记失败使其可见
+    const sg = this.skillGroups.get(task.skillGroupId);
+    if (!sg) {
+      await this.tasks
+        .fail(task.id, '技能组不存在，任务无法提交')
+        .catch(() => undefined);
+      return { ok: false, error: 'skill-group-missing' };
     }
-    // 写回安全：清理后再校验（需求 §8）
-    const clean = sanitizeNoteHtml(rawNote);
-    if (!clean) {
-      return { ok: false, error: 'empty-note-after-sanitize' };
+    // 按交付物 schema 校验提交参数（纯逻辑；损坏配置降级为 note）
+    const deliverable = normalizeDeliverable(sg.deliverable);
+    const validated = validateSubmitParams(deliverable, params, task.id);
+    if (!validated.ok) {
+      return { ok: false, error: validated.error };
     }
     // 按 itemKey 取父条目（守卫：不存在则 fail 任务并报错）
     const parent = await this.resolveParentItem(task.itemKey);
@@ -789,29 +835,230 @@ export class McpServer implements IMcpServer {
         .catch(() => undefined);
       return { ok: false, error: 'parent-item-missing' };
     }
-    try {
-      const Z = zoteroGlobal();
-      const note = new Z.Item('note');
-      note.parentID = parent.id;
-      note.setNote(clean);
-      await note.saveTx();
-      const noteKey: string = note.key;
-      if (!noteKey) {
-        throw new Error('note-key-missing');
-      }
-      await this.tasks.complete(task.id, noteKey);
-      log('submit ok:', task.id, '-> note', noteKey);
-      return { ok: true, noteKey };
-    } catch (e) {
-      // 写回失败：任务保留未完成并记录错误，可重试；
-      // 错误信息截断后再持久化/返回（fail 有长度上限校验）
-      const msg = errMsg(e);
-      const short = truncateForDisplay(msg, LIMITS.mcpErrorSnippet);
-      logError('submit note write failed:', task.id, short);
-      const persisted =
-        msg.length > LIMITS.failReason ? msg.slice(0, LIMITS.failReason) + '…' : msg;
-      await this.tasks.fail(task.id, persisted).catch(() => undefined);
-      return { ok: false, error: `note-write-failed:${short}` };
+    switch (validated.kind) {
+      case 'note':
+        return this.submitNote(task, parent, validated.html, 'note');
+      case 'markdown-note':
+        return this.submitNote(task, parent, validated.html, 'markdown');
+      case 'file':
+        return this.submitFile(
+          task,
+          parent,
+          deliverable,
+          validated.fileName,
+          validated.bytes
+        );
+      case 'markdown-file':
+        return this.submitFile(
+          task,
+          parent,
+          deliverable,
+          validated.fileName,
+          new TextEncoder().encode(validated.text)
+        );
     }
+  }
+
+  /** 幂等命中时按任务记录重建提交结果 */
+  private duplicateResult(task: Task): SubmitResult {
+    const dtype = task.deliverableType ?? 'note';
+    const res: SubmitResult = {
+      ok: true,
+      duplicate: true,
+      deliverableType: dtype,
+    };
+    if (task.noteKey) {
+      res.noteKey = task.noteKey;
+    }
+    // 文件类交付物：deliverableRef 为相对受控目录的文件名
+    if (
+      (dtype === 'file' ||
+        (dtype === 'markdown' && !task.noteKey)) &&
+      task.deliverableRef
+    ) {
+      res.fileName = task.deliverableRef;
+    }
+    if (task.attachmentKey) {
+      res.attachmentKey = task.attachmentKey;
+    }
+    return res;
+  }
+
+  /** 写内建笔记（note / markdown→note 共用） */
+  private async submitNote(
+    task: Task,
+    parent: any,
+    html: string,
+    dtype: 'note' | 'markdown'
+  ): Promise<SubmitResult> {
+    // 写回安全：清理后再校验（需求 §8）
+    const clean = sanitizeNoteHtml(html);
+    if (!clean) {
+      return { ok: false, error: 'empty-note-after-sanitize' };
+    }
+    try {
+      const noteKey = await this.createChildNote(parent, clean);
+      await this.tasks.complete(task.id, {
+        noteKey,
+        deliverableType: dtype,
+        deliverableRef: noteKey,
+      });
+      log('submit ok:', task.id, `-> note(${dtype})`, noteKey);
+      return { ok: true, noteKey, deliverableType: dtype };
+    } catch (e) {
+      return this.failSubmit(task, e, 'note');
+    }
+  }
+
+  /** 在父条目下创建内建笔记，返回笔记 key */
+  private async createChildNote(parent: any, html: string): Promise<string> {
+    const Z = zoteroGlobal();
+    const note = new Z.Item('note');
+    note.parentID = parent.id;
+    note.setNote(html);
+    await note.saveTx();
+    const noteKey: string = note.key;
+    if (!noteKey) {
+      throw new Error('note-key-missing');
+    }
+    return noteKey;
+  }
+
+  /**
+   * 写文件交付物：存入受控输出目录（<数据目录>/skilltask/deliverables/<taskId>/），
+   * attachToItem 时挂成父条目附件。日志只记录文件名与大小，绝不输出内容。
+   */
+  private async submitFile(
+    task: Task,
+    parent: any,
+    deliverable: SkillDeliverable,
+    fileName: string,
+    bytes: Uint8Array
+  ): Promise<SubmitResult> {
+    const dtype = deliverable.type === 'markdown' ? 'markdown' : 'file';
+    const attach =
+      deliverable.type === 'file'
+        ? !!deliverable.attachToItem
+        : deliverable.type === 'markdown' &&
+          deliverable.target === 'file' &&
+          !!deliverable.attachToItem;
+    try {
+      const { dir, dest, rel } = this.deliverablePaths(task.id, fileName);
+      await this.writeBytes(dir, dest, bytes);
+      log(
+        'submit file saved:',
+        task.id,
+        rel,
+        `${bytes.length} bytes`
+      );
+      let attachmentKey: string | null = null;
+      if (attach) {
+        attachmentKey = await this.attachFileToParent(parent, dest);
+      }
+      await this.tasks.complete(task.id, {
+        noteKey: null,
+        deliverableType: dtype,
+        deliverableRef: rel,
+        attachmentKey,
+      });
+      log('submit ok:', task.id, `-> file(${dtype})`, rel);
+      const res: SubmitResult = {
+        ok: true,
+        fileName: rel,
+        deliverableType: dtype,
+      };
+      if (attachmentKey) {
+        res.attachmentKey = attachmentKey;
+      }
+      return res;
+    } catch (e) {
+      return this.failSubmit(task, e, 'file');
+    }
+  }
+
+  /**
+   * 计算交付物文件的落盘路径。
+   * fileName 已在 validateSubmitParams 中消毒（无路径分隔符），
+   * 这里再做一次分隔符断言做纵深防御。
+   */
+  private deliverablePaths(
+    taskId: string,
+    fileName: string
+  ): { dir: string; dest: string; rel: string } {
+    if (fileName.includes('/') || fileName.includes('\\')) {
+      throw new Error('invalid-file-path');
+    }
+    const Z = zoteroGlobal();
+    const g = globalThis as any;
+    const base = g.PathUtils.join(
+      Z.DataDirectory.dir,
+      DATA_DIR_NAME,
+      DELIVERABLES_DIR_NAME
+    );
+    const dir = g.PathUtils.join(base, taskId);
+    return {
+      dir,
+      dest: g.PathUtils.join(dir, fileName),
+      rel: `${taskId}/${fileName}`,
+    };
+  }
+
+  /** 写字节到受控目录（先建目录；IO API 不可用时直接抛错） */
+  private async writeBytes(
+    dir: string,
+    dest: string,
+    bytes: Uint8Array
+  ): Promise<void> {
+    const g = globalThis as any;
+    if (
+      typeof g.IOUtils?.write !== 'function' ||
+      typeof g.IOUtils?.makeDirectory !== 'function' ||
+      typeof g.PathUtils?.join !== 'function'
+    ) {
+      throw new Error('file-write-unavailable');
+    }
+    await g.IOUtils.makeDirectory(dir, {
+      createAncestors: true,
+      ignoreExisting: true,
+    });
+    await g.IOUtils.write(dest, bytes);
+  }
+
+  /** 把已落盘文件挂成父条目的子附件（导入进 Zotero 存储），返回附件 key */
+  private async attachFileToParent(
+    parent: any,
+    absPath: string
+  ): Promise<string> {
+    const Z = zoteroGlobal();
+    if (typeof Z?.Attachments?.importFromFile !== 'function') {
+      throw new Error('attachment-api-unavailable');
+    }
+    const attachment = await Z.Attachments.importFromFile({
+      file: absPath,
+      parentItemID: parent.id,
+    });
+    const key: string | undefined = attachment?.key;
+    if (!key) {
+      throw new Error('attachment-key-missing');
+    }
+    return key;
+  }
+
+  /**
+   * 提交写回失败：任务保留未完成并记录错误，可重试；
+   * 错误信息截断后再持久化/返回（fail 有长度上限校验）。
+   */
+  private async failSubmit(
+    task: Task,
+    e: unknown,
+    kind: string
+  ): Promise<SubmitResult> {
+    const msg = e instanceof Error ? e.message : String(e);
+    const short = truncateForDisplay(msg, LIMITS.mcpErrorSnippet);
+    logError(`submit ${kind} write failed:`, task.id, short);
+    const persisted =
+      msg.length > LIMITS.failReason ? msg.slice(0, LIMITS.failReason) + '…' : msg;
+    await this.tasks.fail(task.id, persisted).catch(() => undefined);
+    return { ok: false, error: `${kind}-write-failed:${short}` };
   }
 }

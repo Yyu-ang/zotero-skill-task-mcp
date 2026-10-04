@@ -44,10 +44,30 @@ export interface SkillMaterials {
   pdf: 'earliest' | 'none';
 }
 
-/** 技能组交付物定义（v1 只支持内建笔记） */
-export interface SkillDeliverable {
-  type: 'note';
-}
+/** 技能组交付物定义 */
+export type SkillDeliverable =
+  | {
+      /** 内建笔记：文本/HTML 写成父条目下的 Zotero 笔记 */
+      type: 'note';
+    }
+  | {
+      /** 文件：二进制文件（PDF 等）存入受控输出目录 */
+      type: 'file';
+      /** 是否自动挂成父条目附件（默认 false：只存受控目录） */
+      attachToItem?: boolean;
+      /** 允许的扩展名白名单（小写、无点，如 ['pdf']）；省略用默认安全白名单 */
+      allowedExtensions?: string[];
+      /** 单文件最大字节数；省略用全局默认（LIMITS.deliverableFileBytes） */
+      maxBytes?: number;
+    }
+  | {
+      /** Markdown 文本 */
+      type: 'markdown';
+      /** 'note' 转写成内建笔记；'file' 存为 .md 文件 */
+      target: 'note' | 'file';
+      /** target==='file' 时是否挂成父条目附件（默认 false） */
+      attachToItem?: boolean;
+    };
 
 /** 技能组（AI 任务模板） */
 export interface SkillGroup {
@@ -99,8 +119,17 @@ export interface Task {
   /** 领取/提交尝试次数 */
   attempts: number;
   lastError: string | null;
-  /** 完成时创建的 Zotero 笔记 key（幂等依据） */
+  /** 完成时创建的 Zotero 笔记 key（note / markdown→note 时；历史兼容字段） */
   noteKey: string | null;
+  /** 完成时交付物类型（done 时记录；历史任务为 null） */
+  deliverableType: 'note' | 'file' | 'markdown' | null;
+  /**
+   * 完成时交付物引用（幂等依据）：
+   * note/markdown→note 时为笔记 key；file/markdown→file 时为相对受控目录的文件名
+   */
+  deliverableRef: string | null;
+  /** 完成时挂成的 Zotero 附件 key（仅 attachToItem 时有值） */
+  attachmentKey: string | null;
   createdAt: number;
   claimedAt: number | null;
   completedAt: number | null;
@@ -144,6 +173,8 @@ export interface ClaimResult {
     instruction: string;
     itemKey: string;
     leaseExpiresAt: number;
+    /** 技能组声明的交付物 schema（FR-07）：提交时须按此格式 */
+    deliverable: SkillDeliverable;
   } | null;
   materials: MaterialPackage | null;
   /** task 为 null 时的说明（如 'empty-queue'） */
@@ -154,9 +185,26 @@ export interface ClaimResult {
 export interface SubmitResult {
   ok: boolean;
   noteKey?: string;
+  /** 文件交付物的文件名（相对受控输出目录） */
+  fileName?: string;
+  /** 挂成附件时的 Zotero 附件 key */
+  attachmentKey?: string;
+  /** 本次提交的交付物类型 */
+  deliverableType?: 'note' | 'file' | 'markdown';
   /** 重复提交（幂等命中）时为 true */
   duplicate?: boolean;
   error?: string;
+}
+
+/** 任务完成时的交付物记录（传给 ITaskStore.complete） */
+export interface TaskCompleteResult {
+  /** 笔记 key（note / markdown→note 时；其余类型为 null） */
+  noteKey: string | null;
+  deliverableType: 'note' | 'file' | 'markdown';
+  /** 交付物引用：note 时为笔记 key；file 时为相对受控目录的文件名 */
+  deliverableRef: string | null;
+  /** 挂成附件时的 Zotero 附件 key（无则为 null） */
+  attachmentKey?: string | null;
 }
 
 /** 扫描结果统计 */
@@ -219,8 +267,11 @@ export interface ITaskStore {
   ): Promise<Task | null>;
   /** 过期租约 → pending，返回释放数量 */
   releaseExpiredLeases(now?: number): Promise<number>;
-  /** 完成：幂等，已 done 直接返回 */
-  complete(id: string, noteKey: string): Promise<Task>;
+  /**
+   * 完成：置 done、completedAt=now、记录交付物引用，并清除租约。
+   * 已 done 直接返回原任务（幂等：重复提交不抛错、引用不变）。
+   */
+  complete(id: string, result: TaskCompleteResult): Promise<Task>;
   fail(id: string, error: string): Promise<Task>;
   cancel(id: string): Promise<void>;
   /** failed → pending（attempts 保留） */

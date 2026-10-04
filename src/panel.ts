@@ -20,6 +20,7 @@
  */
 
 import type {
+  SkillDeliverable,
   SkillGroup,
   SkillGroupCreateData,
   SkillMaterials,
@@ -28,6 +29,7 @@ import type {
   Task,
   TaskStatus,
 } from './types';
+import { deliverableLabel } from './deliverables';
 
 /** 选项卡 id */
 type TabId = 'skills' | 'tasks' | 'mcp';
@@ -606,7 +608,7 @@ function scopeSummary(sg: SkillGroup): string {
   return `范围：${n} 个集合（${sg.scope.includeSubcollections ? '含子集合' : '不含子集合'}）`;
 }
 
-/** 输入材料 + 交付物摘要（交付物 v1 固定为内建笔记） */
+/** 输入材料 + 交付物摘要 */
 function materialsSummary(sg: SkillGroup): string {
   const m = sg.materials;
   const parts: string[] = [];
@@ -622,7 +624,7 @@ function materialsSummary(sg: SkillGroup): string {
   if (m.pdf === 'earliest') {
     parts.push('最早 PDF');
   }
-  return `材料：${parts.length ? parts.join('、') : '无'}；交付物：内建笔记`;
+  return `材料：${parts.length ? parts.join('、') : '无'}；交付物：${deliverableLabel(sg.deliverable)}`;
 }
 
 /** 渲染技能组选项卡 */
@@ -898,10 +900,105 @@ function renderForm(wrap: HTMLElement): void {
   matField.append(rowMeta, rowAbs, rowNotes, rowPdf1, rowPdf2);
   wrap.append(matField);
 
-  // —— 交付物（固定显示） ——
+  // —— 交付物 ——
   const delField = el('div', 'field');
   delField.append(formLabel('交付物'));
-  delField.append(el('div', 'fixed-note', '内建笔记（v1 唯一支持的交付物类型）'));
+  const curDel: SkillDeliverable = editing?.deliverable ?? { type: 'note' };
+  const delTypeCur = curDel.type === 'file' || curDel.type === 'markdown' ? curDel.type : 'note';
+  const delNote = el('input');
+  delNote.type = 'radio';
+  delNote.name = 'deliverable-type';
+  delNote.value = 'note';
+  const delFile = el('input');
+  delFile.type = 'radio';
+  delFile.name = 'deliverable-type';
+  delFile.value = 'file';
+  const delMd = el('input');
+  delMd.type = 'radio';
+  delMd.name = 'deliverable-type';
+  delMd.value = 'markdown';
+  if (delTypeCur === 'file') {
+    delFile.checked = true;
+  } else if (delTypeCur === 'markdown') {
+    delMd.checked = true;
+  } else {
+    delNote.checked = true;
+  }
+  const rowDelNote = el('div', 'radio-row');
+  rowDelNote.append(delNote, el('span', '', '内建笔记（HTML 写成条目笔记）'));
+  const rowDelFile = el('div', 'radio-row');
+  rowDelFile.append(delFile, el('span', '', '文件（PDF 等，存入受控目录）'));
+  const rowDelMd = el('div', 'radio-row');
+  rowDelMd.append(delMd, el('span', '', 'Markdown 文本'));
+  delField.append(rowDelNote, rowDelFile, rowDelMd);
+
+  // 文件交付物选项
+  const fileOpts = el('div', '');
+  fileOpts.style.paddingLeft = '24px';
+  const attachFile = el('input');
+  attachFile.type = 'checkbox';
+  attachFile.checked = curDel.type === 'file' && !!curDel.attachToItem;
+  const rowAttachFile = el('div', 'check-row');
+  rowAttachFile.append(attachFile, el('span', '', '完成后自动挂成条目附件'));
+  const extInput = el('input');
+  extInput.type = 'text';
+  extInput.placeholder = '允许的扩展名，逗号分隔（留空用默认：pdf、md、txt…）';
+  extInput.value =
+    curDel.type === 'file' && curDel.allowedExtensions
+      ? curDel.allowedExtensions.join(', ')
+      : '';
+  const maxMBInput = el('input');
+  maxMBInput.type = 'text';
+  maxMBInput.placeholder = '单文件上限 MB（留空默认 50，最大 200）';
+  maxMBInput.value =
+    curDel.type === 'file' && curDel.maxBytes
+      ? String(Math.round((curDel.maxBytes / 1048576) * 10) / 10)
+      : '';
+  fileOpts.append(rowAttachFile, extInput, maxMBInput);
+
+  // Markdown 交付物选项
+  const mdOpts = el('div', '');
+  mdOpts.style.paddingLeft = '24px';
+  const mdTargetNote = el('input');
+  mdTargetNote.type = 'radio';
+  mdTargetNote.name = 'md-target';
+  mdTargetNote.value = 'note';
+  const mdTargetFile = el('input');
+  mdTargetFile.type = 'radio';
+  mdTargetFile.name = 'md-target';
+  mdTargetFile.value = 'file';
+  const mdTargetCur =
+    curDel.type === 'markdown' && curDel.target === 'file' ? 'file' : 'note';
+  if (mdTargetCur === 'file') {
+    mdTargetFile.checked = true;
+  } else {
+    mdTargetNote.checked = true;
+  }
+  const rowMdNote = el('div', 'radio-row');
+  rowMdNote.append(mdTargetNote, el('span', '', '转写成内建笔记'));
+  const rowMdFile = el('div', 'radio-row');
+  rowMdFile.append(mdTargetFile, el('span', '', '存为 .md 文件'));
+  const attachMd = el('input');
+  attachMd.type = 'checkbox';
+  attachMd.checked = curDel.type === 'markdown' && !!curDel.attachToItem;
+  const rowAttachMd = el('div', 'check-row');
+  rowAttachMd.append(attachMd, el('span', '', '存文件时自动挂成条目附件'));
+  mdOpts.append(rowMdNote, rowMdFile, rowAttachMd);
+
+  const syncDelOpts = (): void => {
+    const v = (
+      delField.querySelector(
+        'input[name="deliverable-type"]:checked'
+      ) as HTMLInputElement
+    )?.value;
+    fileOpts.hidden = v !== 'file';
+    mdOpts.hidden = v !== 'markdown';
+  };
+  for (const r of [delNote, delFile, delMd]) {
+    r.addEventListener('change', syncDelOpts);
+  }
+  syncDelOpts();
+  delField.append(fileOpts, mdOpts);
   wrap.append(delField);
 
   // —— 保存 / 取消 ——
@@ -953,17 +1050,79 @@ function renderForm(wrap: HTMLElement): void {
           includeNotes: matNotes.checked,
           pdf: pdfMode === 'none' ? 'none' : 'earliest',
         };
-        if (editing) {
-          await api!.skillGroups.update(editing.id, { name, instruction, scope, materials });
-        } else {
-          const data: SkillGroupCreateData = {
-            name,
-            instruction,
-            scope,
-            materials,
-            deliverable: { type: 'note' },
+        // 交付物：按类型组装配置（store 层二次校验，非法时抛中文错）
+        const delType = (
+          wrap.querySelector(
+            'input[name="deliverable-type"]:checked'
+          ) as HTMLInputElement
+        )?.value as 'note' | 'file' | 'markdown';
+        let deliverable: SkillDeliverable;
+        if (delType === 'file') {
+          const d: Extract<SkillDeliverable, { type: 'file' }> = {
+            type: 'file',
           };
-          await api!.skillGroups.create(data);
+          if (attachFile.checked) {
+            d.attachToItem = true;
+          }
+          const exts = extInput.value
+            .split(/[,，]/)
+            .map((s) => s.trim().toLowerCase().replace(/^\./, ''))
+            .filter((s) => /^[a-z0-9]{1,10}$/.test(s));
+          if (exts.length) {
+            d.allowedExtensions = [...new Set(exts)];
+          }
+          const mbText = maxMBInput.value.trim();
+          if (mbText) {
+            const mb = Number(mbText);
+            if (!Number.isFinite(mb) || mb <= 0) {
+              showError('单文件上限须为正数（单位 MB）。');
+              return;
+            }
+            d.maxBytes = Math.floor(mb * 1048576);
+          }
+          deliverable = d;
+        } else if (delType === 'markdown') {
+          const target =
+            (
+              wrap.querySelector(
+                'input[name="md-target"]:checked'
+              ) as HTMLInputElement
+            )?.value === 'file'
+              ? 'file'
+              : 'note';
+          const d: Extract<SkillDeliverable, { type: 'markdown' }> = {
+            type: 'markdown',
+            target,
+          };
+          if (target === 'file' && attachMd.checked) {
+            d.attachToItem = true;
+          }
+          deliverable = d;
+        } else {
+          deliverable = { type: 'note' };
+        }
+        try {
+          if (editing) {
+            await api!.skillGroups.update(editing.id, {
+              name,
+              instruction,
+              scope,
+              materials,
+              deliverable,
+            });
+          } else {
+            const data: SkillGroupCreateData = {
+              name,
+              instruction,
+              scope,
+              materials,
+              deliverable,
+            };
+            await api!.skillGroups.create(data);
+          }
+        } catch (e) {
+          showError(e instanceof Error ? e.message : String(e));
+          return;
         }
         closeForm();
         renderSkills();
@@ -1497,13 +1656,25 @@ function taskDetail(t: Task): HTMLElement {
   }
   d.append(matSec);
 
-  // 交付物（v1 固定为内建笔记）
+  // 交付物：类型 + 交付结果（笔记 key / 文件名 / 附件 key）
   const delSec = el('div', 'd-sec');
   delSec.append(el('h4', '', '交付物'));
   const delGrid = el('div', 'detail-grid');
-  delGrid.append(detailKV('类型', '内建笔记'));
-  delGrid.append(detailKV('笔记 key', t.noteKey ?? '尚未写入', !!t.noteKey));
-  delGrid.append(detailKV('写入状态', t.noteKey ? '已写入' : '—'));
+  delGrid.append(detailKV('类型', deliverableLabel(sg?.deliverable)));
+  if (t.status === 'done') {
+    const dtype = t.deliverableType ?? (t.noteKey ? 'note' : null);
+    if (dtype === 'file' || (dtype === 'markdown' && !t.noteKey)) {
+      delGrid.append(detailKV('文件', t.deliverableRef ?? '—', true));
+    } else if (t.noteKey) {
+      delGrid.append(detailKV('笔记 key', t.noteKey, true));
+    }
+    if (t.attachmentKey) {
+      delGrid.append(detailKV('附件 key', t.attachmentKey, true));
+    }
+    delGrid.append(detailKV('写入状态', '已交付'));
+  } else {
+    delGrid.append(detailKV('写入状态', '尚未交付'));
+  }
   delSec.append(delGrid);
   d.append(delSec);
 
@@ -2062,8 +2233,17 @@ function auditCard(): HTMLElement {
     info.append(l1);
     const sgName = api!.skillGroups.get(ev.task.skillGroupId)?.name ?? '（技能组已删除）';
     let sub = sgName;
-    if (ev.kind === 'done' && ev.task.noteKey) {
-      sub += ` · 笔记 ${ev.task.noteKey}`;
+    if (ev.kind === 'done') {
+      const t = ev.task;
+      const dtype = t.deliverableType ?? (t.noteKey ? 'note' : null);
+      if (dtype === 'file' || (dtype === 'markdown' && !t.noteKey)) {
+        sub += ` · 文件 ${t.deliverableRef ?? ''}`;
+      } else if (t.noteKey) {
+        sub += ` · 笔记 ${t.noteKey}`;
+      }
+      if (t.attachmentKey) {
+        sub += ` · 附件 ${t.attachmentKey}`;
+      }
     }
     if (ev.kind === 'fail' && ev.task.lastError) {
       sub += ` · ${ev.task.lastError}`;

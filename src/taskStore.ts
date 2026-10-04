@@ -18,6 +18,7 @@ import {
   DEFAULT_LEASE_MS,
   type ITaskStore,
   type Task,
+  type TaskCompleteResult,
   type TaskCreateData,
   type TaskFilter,
   type TaskStatus,
@@ -208,6 +209,9 @@ export class TaskStore implements ITaskStore {
       attempts: 0,
       lastError: null,
       noteKey: null,
+      deliverableType: null,
+      deliverableRef: null,
+      attachmentKey: null,
       createdAt: now,
       claimedAt: null,
       completedAt: null,
@@ -282,20 +286,37 @@ export class TaskStore implements ITaskStore {
   }
 
   /**
-   * 完成任务：置 done、completedAt=now、记录 noteKey，并清除租约。
-   * 已 done 直接返回原任务（幂等：重复提交不抛错、noteKey 不变）。
+   * 完成任务：置 done、completedAt=now、记录交付物引用，并清除租约。
+   * 已 done 直接返回原任务（幂等：重复提交不抛错、引用不变）。
    */
-  async complete(id: string, noteKey: string): Promise<Task> {
+  async complete(id: string, result: TaskCompleteResult): Promise<Task> {
     const task = this.require(id);
     if (task.status === 'done') {
       return { ...task }; // 幂等：重复提交不产生副作用
     }
-    if (typeof noteKey !== 'string' || !noteKey.trim()) {
-      throw new Error('完成任务失败：笔记 key 无效');
+    if (
+      result.deliverableType !== 'note' &&
+      result.deliverableType !== 'file' &&
+      result.deliverableType !== 'markdown'
+    ) {
+      throw new Error('完成任务失败：交付物类型无效');
+    }
+    if (typeof result.deliverableRef !== 'string' || !result.deliverableRef.trim()) {
+      throw new Error('完成任务失败：交付物引用无效');
     }
     task.status = 'done';
     task.completedAt = Date.now();
-    task.noteKey = noteKey;
+    task.deliverableType = result.deliverableType;
+    task.deliverableRef = result.deliverableRef;
+    task.attachmentKey =
+      typeof result.attachmentKey === 'string' && result.attachmentKey
+        ? result.attachmentKey
+        : null;
+    // noteKey 保持历史兼容：note / markdown→note 时写入笔记 key
+    task.noteKey =
+      typeof result.noteKey === 'string' && result.noteKey
+        ? result.noteKey
+        : null;
     task.leaseExpiresAt = null;
     await this.persist();
     return { ...task };
@@ -449,6 +470,16 @@ function normalizeTask(item: unknown): Task | null {
     attempts: typeof raw.attempts === 'number' ? raw.attempts : 0,
     lastError: typeof raw.lastError === 'string' ? raw.lastError : null,
     noteKey: typeof raw.noteKey === 'string' ? raw.noteKey : null,
+    deliverableType:
+      raw.deliverableType === 'note' ||
+      raw.deliverableType === 'file' ||
+      raw.deliverableType === 'markdown'
+        ? raw.deliverableType
+        : null,
+    deliverableRef:
+      typeof raw.deliverableRef === 'string' ? raw.deliverableRef : null,
+    attachmentKey:
+      typeof raw.attachmentKey === 'string' ? raw.attachmentKey : null,
     createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : now,
     claimedAt: typeof raw.claimedAt === 'number' ? raw.claimedAt : null,
     completedAt:

@@ -1,1 +1,17 @@
-{"description":"Zotero 桌面插件：在 Zotero 内维护 AI 技能组（任务模板），按范围扫描文献生成可持久化任务；外部 AI 经 MCP HTTP 接口被动领取并提交交付物。","devDependencies":{"esbuild":"^0.25.0","typescript":"^5.7.0","zotero-types":"^4.0.0"},"name":"zotero-skill-task-mcp","scripts":{"build":"node scripts/build.mjs","release":"node scripts/release.mjs","typecheck":"tsc --noEmit"},"type":"module","version":"0.1.0"}
+{
+  "description": "Zotero 桌面插件：在 Zotero 内维护 AI 技能组（任务模板），按范围扫描文献生成可持久化任务；外部 AI 经 MCP HTTP 接口被动领取并提交交付物。",
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0",
+    "zotero-types": "^4.0.0"
+  },
+  "name": "zotero-skill-task-mcp",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "release": "node scripts/release.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/test-deliverables.mjs"
+  },
+  "type": "module",
+  "version": "0.1.0"
+}

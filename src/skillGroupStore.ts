@@ -23,6 +23,7 @@ import {
   uid,
 } from './types';
 import { LIMITS, log, error, truncateForDisplay } from './utils';
+import { assertValidDeliverable } from './deliverables';
 
 /** 持久化文件名 */
 const FILE_NAME = 'skill-groups.json';
@@ -143,6 +144,7 @@ export class SkillGroupStore implements ISkillGroupStore {
     const name = assertValidName(data.name);
     const instruction = assertValidInstruction(data.instruction);
     assertValidScope(data.scope);
+    const deliverable = assertValidDeliverable(data.deliverable);
 
     const now = Date.now();
     const sg: SkillGroup = {
@@ -154,7 +156,7 @@ export class SkillGroupStore implements ISkillGroupStore {
       version: 1,
       scope: clone(data.scope),
       materials: clone(data.materials),
-      deliverable: clone(data.deliverable),
+      deliverable,
       createdAt: now,
       updatedAt: now,
     };
@@ -181,7 +183,7 @@ export class SkillGroupStore implements ISkillGroupStore {
       sg.materials = clone(patch.materials);
     }
     if (patch.deliverable !== undefined) {
-      sg.deliverable = clone(patch.deliverable);
+      sg.deliverable = assertValidDeliverable(patch.deliverable);
     }
 
     sg.version += 1;
