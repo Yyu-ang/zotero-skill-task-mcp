@@ -22,6 +22,32 @@ npm run build      # 构建 → dist/zotero-skill-task-mcp-<版本>.xpi
 npm run release    # 构建 + 生成 update.json（供插件自动更新）
 ```
 
+## 开发调试（对标 cookjohn/zotero-mcp 的 `npm run start`）
+
+```bash
+# 开发模式：源码代理安装 + 文件监听 + 热重载
+npm run dev   # 或 npm start
+```
+
+流程：
+1. dev 构建（产物写入 `addon/content/*.js`，含 sourcemap）
+2. 在开发 profile（默认 `~/.zotero-dev/<plugin-id>`）的 `extensions/` 下写代理文件，
+   Zotero 直接从 `addon/` 源码加载插件，无需打包 XPI
+3. 启动 Zotero（带 `-purgecaches -ZoteroDebugText -jsconsole`，报错直接可见）
+4. 监听 `src/`、`addon/` 变化 → 自动重建 → 插件约 1 秒内热重载（`AddonManager.reload()`），无需重启 Zotero
+
+首次运行需在 Zotero 的「工具 → 插件」里手动启用一次（侧载默认禁用），之后保持启用。
+
+可选参数：
+```bash
+node scripts/serve.mjs --profile <dir>   # 指定开发 profile 目录
+node scripts/serve.mjs --zotero <bin>    # 指定 Zotero 可执行文件路径
+node scripts/serve.mjs --no-launch      # 只监听重建，不启动 Zotero
+# 环境变量 ZOTERO_BIN / ZOTERO_PROFILE 同样有效
+```
+
+调试日志：在 Zotero 里「帮助 → Debug Output Logging → View Output」，搜 `[SkillTask]`。
+
 ## 安装
 
 1. `npm run build` 得到 `dist/*.xpi`

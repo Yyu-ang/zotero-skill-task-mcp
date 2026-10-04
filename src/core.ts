@@ -6,7 +6,7 @@
  * 业务功能（技能组、任务队列、MCP）后续在此组合。
  */
 
-import { log } from './utils';
+import { log, IS_PRODUCTION } from './utils';
 import {
   registerToolsMenu,
   unregisterToolsMenu,
@@ -46,6 +46,8 @@ export class PluginCore {
    * 已卸载则自注销监听/清除 timer 并直接返回，不操作已释放资源。
    */
   private alive: boolean = false;
+  /** 开发模式热重载轮询定时器（仅 npm run dev 生效，生产包无此逻辑） */
+  private devReloadTimer: any = null;
 
   // ──────────── 生命周期 ────────────
 
@@ -156,6 +158,96 @@ export class PluginCore {
     }
 
     log('Skill Task initialized successfully');
+
+    // 开发模式热重载（npm run dev）：serve.mjs 重建后更新 trigger 文件时间戳，
+    // 这里检测到变化即热重载插件，无需重启 Zotero。生产包 IS_PRODUCTION 为 true，直接跳过。
+    this.startDevReloadWatcher();
+  }
+
+  /**
+   * 开发模式热重载监听（仅 dev 构建）。
+   * 约定：serve.mjs 在每次重建后 `touch <profile>/extensions/.skill-task-dev-reload`；
+   * 本方法每秒检查该文件 mtime，变化即经 AddonManager.reload() 热重载。
+   */
+  private startDevReloadWatcher(): void {
+    if (IS_PRODUCTION) return;
+    try {
+      // profile 目录：优先 Services.dirsvc（bootstrap 沙箱可用），兜底 Zotero.Profile
+      let profileDir: string | null = null;
+      try {
+        const Svc = (globalThis as any).Services;
+        const Ci = (globalThis as any).Ci;
+        if (Svc?.dirsvc && Ci?.nsIFile) {
+          profileDir = Svc.dirsvc.get('ProfD', Ci.nsIFile).path;
+        }
+      } catch {
+        // ignore
+      }
+      if (!profileDir) {
+        try {
+          profileDir = (Zotero as any).Profile?.dir ?? null;
+        } catch {
+          // ignore
+        }
+      }
+      if (!profileDir) return;
+      const triggerPath = `${profileDir}/extensions/.skill-task-dev-reload`;
+
+      const getMtime = (): number | null => {
+        try {
+          // bootstrap 沙箱有 Cc/Ci（官方文档），用 nsIFile 取 mtime
+          const Cc = (globalThis as any).Cc;
+          const Ci = (globalThis as any).Ci;
+          if (Cc && Ci) {
+            const file = Cc['@mozilla.org/file/local;1'].createInstance(Ci.nsIFile);
+            file.initWithPath(triggerPath);
+            if (file.exists()) {
+              return file.lastModifiedTime;
+            }
+          }
+        } catch (e) {
+          log(`[dev] stat failed: ${e}`);
+        }
+        return null;
+      };
+
+      let lastMtime = getMtime();
+      if (lastMtime === null) return; // 无 trigger 文件，不启用
+      log('[dev] hot-reload watcher enabled');
+
+      this.devReloadTimer = setInterval(async () => {
+        try {
+          if (!this.alive) return;
+          const mtime = getMtime();
+          if (mtime !== null && mtime !== lastMtime) {
+            lastMtime = mtime;
+            log('[dev] change detected, hot-reloading plugin…');
+            let AddonManager: any;
+            try {
+              ({ AddonManager } = (globalThis as any).ChromeUtils.importESModule(
+                'resource://gre/modules/AddonManager.sys.mjs'
+              ));
+            } catch {
+              ({ AddonManager } = (globalThis as any).ChromeUtils.import(
+                'resource://gre/modules/AddonManager.jsm'
+              ));
+            }
+            const addon = await AddonManager.getAddonByID(this.id);
+            await addon?.reload();
+          }
+        } catch (e) {
+          log(`[dev] hot-reload failed: ${e}`);
+        }
+      }, 1000);
+      // 避免 timer 拖住进程退出（Node 语义；Zotero 下无害）
+      try {
+        (this.devReloadTimer as any)?.unref?.();
+      } catch {
+        // ignore
+      }
+    } catch {
+      // 开发辅助逻辑永不影响主流程
+    }
   }
 
   /**
@@ -184,6 +276,10 @@ export class PluginCore {
     if (this.leaseTimer) {
       clearInterval(this.leaseTimer);
       this.leaseTimer = null;
+    }
+    if (this.devReloadTimer) {
+      clearInterval(this.devReloadTimer);
+      this.devReloadTimer = null;
     }
     if ((Zotero as any).SkillTask === this.api) {
       delete (Zotero as any).SkillTask;
