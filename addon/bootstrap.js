@@ -18,10 +18,13 @@ const PLUGIN_ID = 'zotero-skill-task@example.com';
 /**
  * 安全获取 PluginHook（plugin.js 加载失败时返回 undefined，不抛错）。
  * 注意：不能用 typeof PluginHook?.x 写法——PluginHook 未声明时 ?. 仍会抛 ReferenceError。
+ * 也不用 globalThis（bootstrap 沙箱中不保证可用）。
  */
 function getHook() {
   try {
-    return globalThis.PluginHook ?? undefined;
+    // typeof 对未声明变量是安全的，返回 'undefined' 而不抛错
+    if (typeof PluginHook === 'undefined') return undefined;
+    return PluginHook ?? undefined;
   } catch {
     return undefined;
   }
