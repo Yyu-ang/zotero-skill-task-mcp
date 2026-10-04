@@ -109,6 +109,8 @@ export class PluginCore {
     this.addToAllWindows();
 
     // 注册插件设置面板（Zotero 8+ PreferencePanes 官方 API）
+    // 参照 Green Frog 模式：image（设置窗口左侧栏图标）+ defaultXUL（原生 XUL 默认样式）；
+    // src 用 rootURI（已验证可工作）。设置项在编辑 → 设置 → 左侧"技能任务"。
     try {
       const PP = (Zotero as any).PreferencePanes;
       if (PP && typeof PP.register === 'function') {
@@ -117,8 +119,9 @@ export class PluginCore {
           pluginID: this.id,
           src: this.rootURI + 'content/preferences.xhtml',
           label: locale.toLowerCase().startsWith('zh') ? '技能任务' : 'Skill Task',
+          image: this.rootURI + 'content/icons/icon-48.png',
+          defaultXUL: true,
           scripts: [this.rootURI + 'content/preferences.js'],
-          stylesheets: [this.rootURI + 'content/preferences.css'],
         });
         log(`Preference pane registered: ${this.prefPaneID}`);
       } else {

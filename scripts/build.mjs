@@ -115,13 +115,27 @@ async function main() {
   );
 
   // ── Step 2: 打包 XPI ──
+  // 版本号同步：把 package.json 的版本写入 manifest 的暂存副本再打包，
+  // 保持源码树 addon/manifest.json 不被修改（git 树干净）。
+  // 背景：曾出现 XPI 文件名/Release 是 0.3.0 但包内 manifest 仍写 0.1.0 的问题。
+  const STAGE_DIR = resolve(DIST_DIR, '.stage');
+  rmSync(STAGE_DIR, { recursive: true, force: true });
+  mkdirSync(STAGE_DIR, { recursive: true });
+  execSync(`cp -r "${resolve(ROOT, 'addon')}/." "${STAGE_DIR}/"`, {
+    stdio: 'pipe',
+  });
+  const stageManifestPath = resolve(STAGE_DIR, 'manifest.json');
+  const stageManifest = JSON.parse(readFileSync(stageManifestPath, 'utf-8'));
+  stageManifest.version = pkg.version;
+  writeFileSync(stageManifestPath, JSON.stringify(stageManifest, null, 2) + '\n');
+
   mkdirSync(DIST_DIR, { recursive: true });
   const xpiPath = resolve(DIST_DIR, XPI_NAME);
   rmSync(xpiPath, { force: true });
-  execSync(
-    `cd "${resolve(ROOT, 'addon')}" && zip -qr "${xpiPath}" . -x "*.DS_Store"`,
-    { stdio: 'pipe' }
-  );
+  execSync(`cd "${STAGE_DIR}" && zip -qr "${xpiPath}" . -x "*.DS_Store"`, {
+    stdio: 'pipe',
+  });
+  rmSync(STAGE_DIR, { recursive: true, force: true });
   const xpiStats = statSync(xpiPath);
 
   const elapsed = Date.now() - start;
