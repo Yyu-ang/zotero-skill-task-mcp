@@ -38,7 +38,13 @@ function getHook() {
  */
 function loadPluginScript(rootURI) {
   try {
+    if (typeof Zotero !== 'undefined' && Zotero.debug) {
+      Zotero.debug(`[SkillTask] bootstrap: loading ${rootURI}content/plugin.js`);
+    }
     Services.scriptloader.loadSubScript(rootURI + 'content/plugin.js');
+    if (typeof Zotero !== 'undefined' && Zotero.debug) {
+      Zotero.debug('[SkillTask] bootstrap: plugin.js loaded');
+    }
   } catch (e) {
     Components.utils.reportError(
       `[${PLUGIN_ID}] Failed to load plugin script: ${e.message}\n${e.stack}`
@@ -65,8 +71,22 @@ function install(data, reason) {
  * @param {number} reason - APP_STARTUP | ADDON_ENABLE | ADDON_UPGRADE | ADDON_DOWNGRADE
  */
 function startup(data, reason) {
+  try {
+    if (typeof Zotero !== 'undefined' && Zotero.debug) {
+      Zotero.debug(`[SkillTask] bootstrap: startup called, rootURI=${data.rootURI}`);
+    }
+  } catch {
+    // ignore
+  }
   loadPluginScript(data.rootURI);
   const hook = getHook();
+  try {
+    if (typeof Zotero !== 'undefined' && Zotero.debug) {
+      Zotero.debug(`[SkillTask] bootstrap: getHook() returned ${hook ? 'object' : String(hook)}`);
+    }
+  } catch {
+    // ignore
+  }
   if (hook && typeof hook.startup === 'function') {
     hook.startup(data, reason);
     if (typeof hook.addToAllWindows === 'function') {

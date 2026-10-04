@@ -17,6 +17,15 @@ const plugin = new PluginCore();
 // 编译产物；注意 bootstrap 沙箱里没有 `window`（实测 typeof window ===
 // 'undefined'），必须用 globalThis 挂载，否则 PluginHook 取不到，
 // 插件 startup() 永远不会被调用（菜单/设置页无入口）。
-(globalThis as any).PluginHook = plugin;
-
-log('Skill Task module loaded');
+try {
+  (globalThis as any).PluginHook = plugin;
+  log('Skill Task module loaded, PluginHook set via globalThis');
+} catch (e) {
+  // globalThis 不可用时的兜底：尝试直接赋值（非严格模式下会挂到全局）
+  try {
+    (Function('return this')() as any).PluginHook = plugin;
+    log('Skill Task module loaded, PluginHook set via Function(this)');
+  } catch (e2) {
+    log(`Skill Task module loaded BUT PluginHook NOT set: ${e}, ${e2}`);
+  }
+}
