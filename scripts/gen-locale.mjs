@@ -31,7 +31,8 @@ const CHECK = process.argv.includes('--check');
 
 /** 解析 ftl 的 JS 节：key = value（单行；续行以缩进续接，\\n 转义为换行） */
 function parseJsSection(ftlPath) {
-  const text = readFileSync(ftlPath, 'utf8');
+  // Windows 下 git autocrlf 会产生 CRLF 换行，先统一为 LF（否则正则的 . 匹配不到 \r）
+  const text = readFileSync(ftlPath, 'utf8').replace(/\r\n/g, '\n');
   const lines = text.split('\n');
   const start = lines.findIndex((l) => l.trim() === SECTION_MARKER);
   if (start === -1) {
