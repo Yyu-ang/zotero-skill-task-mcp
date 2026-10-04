@@ -29,22 +29,74 @@ export const IS_PRODUCTION: boolean = currentEnv() === 'production';
 
 const PREFIX = '[SkillTask]';
 
-/**
- * 普通日志（info/debug 级）。
- * 生产构建下静默，避免生产包刷屏控制台；错误请用 error()。
- */
-export function log(...args: any[]): void {
-  if (IS_PRODUCTION) return;
-  // eslint-disable-next-line no-console
-  console.log(PREFIX, ...args);
+/** bootstrap 沙箱里没有 console（实测 ReferenceError），用 Zotero.debug 兜底 */
+function zoteroDebugAvailable(): boolean {
+  try {
+    const Z: any = typeof Zotero !== 'undefined' ? Zotero : undefined;
+    return !!Z && typeof Z.debug === 'function';
+  } catch {
+    return false;
+  }
+}
+
+function consoleAvailable(): boolean {
+  try {
+    return typeof console !== 'undefined';
+  } catch {
+    return false;
+  }
 }
 
 /**
- * 错误日志。
+ * 普通日志（info/debug 级）。
+ * 生产构建下静默，避免生产包刷屏控制台；错误请用 error()。
+ * 兼容 bootstrap 沙箱（无 console）与窗口作用域。
+ */
+export function log(...args: any[]): void {
+  if (IS_PRODUCTION) return;
+  const msg = `${PREFIX} ${args.map((a) => String(a)).join(' ')}`;
+  try {
+    if (zoteroDebugAvailable()) {
+      (Zotero as any).debug(msg);
+      return;
+    }
+  } catch {
+    // ignore，继续尝试 console
+  }
+  try {
+    if (consoleAvailable()) {
+      // eslint-disable-next-line no-console
+      console.log(PREFIX, ...args);
+    }
+  } catch {
+    // ignore：日志永不抛错
+  }
+}
+
+/**
+ * 错误日志（生产环境也保留）。
+ * 优先走 Zotero.logError（bootstrap 沙箱可用），否则 console.error。
  */
 export function error(...args: any[]): void {
-  // eslint-disable-next-line no-console
-  console.error(PREFIX, ...args);
+  const msg = `${PREFIX} ${args.map((a) => String(a)).join(' ')}`;
+  try {
+    const Z: any = typeof Zotero !== 'undefined' ? Zotero : undefined;
+    if (Z && typeof Z.logError === 'function') {
+      const first = args[0];
+      Z.logError(first instanceof Error ? first : new Error(msg));
+      return;
+    }
+  } catch {
+    // ignore，继续尝试 console
+  }
+  try {
+    if (consoleAvailable()) {
+      // eslint-disable-next-line no-console
+      console.error(PREFIX, ...args);
+    }
+  } catch {
+    // ignore：日志永不抛错
+  }
 }
 
 // ──────────── 输入长度上限（集中定义，便于统一调整） ────────────
