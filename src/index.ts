@@ -12,10 +12,11 @@ import { log } from './utils';
 // 创建插件核心实例
 const plugin = new PluginCore();
 
-// 暴露到全局作用域，供 bootstrap.js 使用
-// bootstrap.js 通过 Services.scriptloader.loadSubScript()
-// 加载此文件的编译产物。执行后，PluginHook 会作为 window
-// 的属性存在，bootstrap.js 中的全局引用即可访问到。
-(window as any).PluginHook = plugin;
+// 暴露到 bootstrap 作用域，供 addon/bootstrap.js 调用。
+// bootstrap.js 通过 Services.scriptloader.loadSubScript() 加载此文件的
+// 编译产物；注意 bootstrap 沙箱里没有 `window`（实测 typeof window ===
+// 'undefined'），必须用 globalThis 挂载，否则 PluginHook 取不到，
+// 插件 startup() 永远不会被调用（菜单/设置页无入口）。
+(globalThis as any).PluginHook = plugin;
 
 log('Skill Task module loaded');

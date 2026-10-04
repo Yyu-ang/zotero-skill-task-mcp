@@ -7,20 +7,23 @@
  * ========================================================================== */
 
 /* 在 bootstrap 作用域中可直接使用以下全局对象（无需 import）：
- *   Zotero, ZoteroPane, Services, Cc, Ci, Cr, Components, rootURI
+ *   Zotero, ZoteroPane, Services, Cc, Ci, Cr, Components
+ * 注意：
+ * - 没有 `window`（typeof window === 'undefined'），不要用 window 挂载全局。
+ * - 没有全局 `rootURI`；插件根 URI 从各生命周期函数的 data.rootURI 取。
  */
 
 const PLUGIN_ID = 'zotero-skill-task@example.com';
-const PLUGIN_URI = rootURI; // 由 Zotero 注入的插件根 URI
 
 /**
  * 加载编译后的主插件脚本。
  * 生成的 plugin.js 文件位于 addon/content/ 下，
  * 包含了 src/ 中所有 TS 源文件的编译产物。
+ * plugin.js 用 globalThis.PluginHook 暴露实例（bootstrap 沙箱无 window）。
  */
-function loadPluginScript() {
+function loadPluginScript(rootURI) {
   try {
-    Services.scriptloader.loadSubScript(PLUGIN_URI + 'content/plugin.js');
+    Services.scriptloader.loadSubScript(rootURI + 'content/plugin.js');
   } catch (e) {
     Components.utils.reportError(
       `[${PLUGIN_ID}] Failed to load plugin script: ${e.message}\n${e.stack}`
@@ -34,7 +37,7 @@ function loadPluginScript() {
  * @param {number}   reason - APP_STARTUP | ADDON_INSTALL | ADDON_UPGRADE | ADDON_DOWNGRADE
  */
 function install(data, reason) {
-  loadPluginScript();
+  loadPluginScript(data.rootURI);
   if (typeof PluginHook?.install === 'function') {
     PluginHook.install(data, reason);
   }
@@ -46,7 +49,7 @@ function install(data, reason) {
  * @param {number} reason - APP_STARTUP | ADDON_ENABLE | ADDON_UPGRADE | ADDON_DOWNGRADE
  */
 function startup(data, reason) {
-  loadPluginScript();
+  loadPluginScript(data.rootURI);
   if (typeof PluginHook?.startup === 'function') {
     PluginHook.startup(data, reason);
     PluginHook.addToAllWindows?.();
@@ -68,7 +71,7 @@ function shutdown(data, reason) {
 /**
  * 插件卸载时调用。
  * @param {Object} data   - { id, version, rootURI }
- * @param {number} reason - APP_UNINSTALL | ADDON_UNINSTALL | ADDON_UPGRADE | ADDON_DOWNGRADE
+ * @param {number} reason - APP_UNINSTALL | ADDON_UNINSTALL | ADDON_DOWNGRADE
  */
 function uninstall(data, reason) {
   if (typeof PluginHook?.uninstall === 'function') {

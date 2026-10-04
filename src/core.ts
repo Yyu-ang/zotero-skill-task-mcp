@@ -282,18 +282,19 @@ export class PluginCore {
 
   /**
    * 需求单 需求3：等待 Zotero 完全就绪。
-   * 逐个检查 initializationPromise / unlockPromise / uiReadyPromise 的可用性
-   * （thenable 才等待），任一不可用直接跳过，不硬编码假设——兼容 Zotero 9+。
-   * 等待本身抛错不中断启动（降级为直接启动，避免插件被卡死）。
+   *
+   * 只等 initializationPromise / unlockPromise（thenable 才等待），
+   * 任一不可用直接跳过，不硬编码假设——兼容 Zotero 9+。
+   *
+   * 注意：不等待 uiReadyPromise。它在主窗口条目视图加载完成后才 resolve，
+   * 而插件 startup（含菜单/设置页注册）不应依赖 UI 就绪；实测发现某些环境下
+   * uiReadyPromise 迟迟不 resolve，会导致整个 startup 卡死、菜单和设置页
+   * 无法注册。为保险起见，等待还设有超时兜底，超时后降级继续启动。
    */
   private async waitForZoteroReady(): Promise<void> {
     const Z: any = typeof Zotero !== 'undefined' ? Zotero : undefined;
     const pending: Array<Promise<unknown>> = [];
-    for (const key of [
-      'initializationPromise',
-      'unlockPromise',
-      'uiReadyPromise',
-    ]) {
+    for (const key of ['initializationPromise', 'unlockPromise']) {
       try {
         const p = Z?.[key];
         if (p && typeof p.then === 'function') {
@@ -308,10 +309,14 @@ export class PluginCore {
       return;
     }
     try {
-      await Promise.all(pending);
+      // 超时兜底：最多等 30 秒，避免某个 Promise 永久挂起卡死插件启动
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('waitForZoteroReady timeout')), 30000)
+      );
+      await Promise.race([Promise.all(pending), timeout]);
       log('Zotero ready, continuing startup');
     } catch (e) {
-      log(`等待 Zotero 就绪时异常，降级继续启动: ${e}`);
+      log(`等待 Zotero 就绪时异常/超时，降级继续启动: ${e}`);
     }
   }
 
