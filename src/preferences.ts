@@ -125,6 +125,8 @@ function init(): void {
         enableEl.checked = !!api.mcp.isEnabled?.();
       }
       refreshMcpStatus();
+    });
+  }
 
   // ── 服务地址：复制按钮 ──
   const addrCopyBtn = $('st-mcp-addr-copy');
@@ -198,8 +200,6 @@ function init(): void {
         }
       }
       updateTokenRowVisibility();
-    });
-  }
     });
   }
   refreshMcpStatus();
