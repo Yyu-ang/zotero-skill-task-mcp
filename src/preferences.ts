@@ -6,46 +6,24 @@
  *
  * Green Frog 模式：简单设置项（租约时长、文件上限）走 xhtml 里的
  * preference 属性原生绑定，无需 JS；这里只保留需要业务逻辑的部分：
- * MCP 服务开关（启停要调 mcp.register/unregister）、访问凭据显示/重新生成。
- * 静态文案走 <linkset> 挂载的 skill-task.ftl；动态文案（确认框/报错）中英双语。
+ * MCP 服务开关（启停要调 mcp.register/unregister）、访问凭据显示/重新生成、
+ * 快捷键配置（校验 + 冲突提示）。
+ * 静态文案走 <linkset> 挂载的 skill-task.ftl；动态文案走 src/utils/locale.ts
+ * 的 getString()（构建时从 ftl 提取，中英双语）。
  * 凭据绝不写入日志。
  */
 
+import { initLocale, getString } from './utils/locale';
+import {
+  prefs,
+  PREFS,
+  isMacPlatform,
+  normalizeShortcutKey,
+  isShortcutEnabled,
+} from './prefs';
+import { getPanelShortcutLabel, isShortcutKeyReserved } from './ui';
+
 const FTL_FILE = 'skill-task.ftl';
-
-/** 动态文案（错误/确认框用），静态标签走 data-l10n-id + 中文兜底 */
-const STR: Record<string, Record<string, string>> = {
-  zh: {
-    apiMissing: '插件核心未就绪，请先打开 Zotero 主窗口。',
-    tokenCopied: '凭据已复制到剪贴板',
-    tokenCopyFail: '自动复制失败，请手动复制输入框中的凭据',
-    regenConfirm: '重新生成访问凭据？旧凭据将立即失效。',
-    regenDone: '新凭据已生成，旧凭据已失效',
-    saveFail: '保存失败：',
-  },
-  en: {
-    apiMissing: 'Plugin core is not ready. Please open the Zotero main window first.',
-    tokenCopied: 'Token copied to clipboard',
-    tokenCopyFail: 'Auto-copy failed. Please copy the token from the input box manually',
-    regenConfirm: 'Regenerate the access token? The old token will stop working immediately.',
-    regenDone: 'New token generated; the old one is now invalid',
-    saveFail: 'Save failed: ',
-  },
-};
-
-function lang(): string {
-  try {
-    const loc = String((Zotero as any)?.locale || '');
-    return loc.toLowerCase().startsWith('zh') ? 'zh' : 'en';
-  } catch {
-    return 'zh';
-  }
-}
-
-function t(key: string): string {
-  const L = lang();
-  return (STR[L] && STR[L][key]) || STR['zh'][key] || key;
-}
 
 /** 插件业务 API（core.ts 在 startup 时挂载到 Zotero.SkillTask） */
 function getAPI(): any {
@@ -115,6 +93,9 @@ function refreshMcpStatus(): void {
 }
 
 function init(): void {
+  // 需求单 需求1：JS 侧 Fluent 国际化（构建时从 ftl 提取，同步 getString）
+  initLocale();
+
   // 兜底注入 Fluent（<linkset> 正常时这行无副作用）
   try {
     (window as any).MozXULElement?.insertFTLIfNeeded(FTL_FILE);
@@ -122,18 +103,12 @@ function init(): void {
     // ignore
   }
 
-  // 快捷键标签：macOS 显示 ⌘
-  try {
-    const isMac = /mac/i.test((navigator as any).platform || '');
-    const keyEl = $('st-shortcut-key');
-    if (keyEl) keyEl.textContent = isMac ? '⌘+Shift+J' : 'Ctrl+Shift+J';
-  } catch {
-    // ignore
-  }
+  // ── 快捷键配置（需求单 需求6；不依赖业务 API，核心未就绪时仍可用） ──
+  initShortcutConfig();
 
   const api = getAPI();
   if (!api?.mcp) {
-    showError(t('apiMissing'));
+    showError(getString('prefs-api-missing'));
     return;
   }
 
@@ -146,7 +121,7 @@ function init(): void {
       try {
         api.mcp.setEnabled(!!enableEl.checked);
       } catch (e: any) {
-        showError(t('saveFail') + (e?.message || e));
+        showError(getString('prefs-save-fail', { error: errMsg(e) }));
         enableEl.checked = !!api.mcp.isEnabled?.();
       }
       refreshMcpStatus();
@@ -171,9 +146,9 @@ function init(): void {
         }
         if (tokenState) tokenState.textContent = '••••••••';
         const ok = await copyText(token);
-        if (!ok) showError(t('tokenCopyFail'));
+        if (!ok) showError(getString('prefs-token-copy-fail'));
       } catch (e: any) {
-        showError(t('saveFail') + (e?.message || e));
+        showError(getString('prefs-save-fail', { error: errMsg(e) }));
       }
     });
   }
@@ -184,7 +159,7 @@ function init(): void {
     regenBtn.addEventListener('command', () => {
       clearError();
       try {
-        if (!window.confirm(t('regenConfirm'))) return;
+        if (!window.confirm(getString('prefs-regen-confirm'))) return;
         const token = api.mcp.regenerateToken();
         if (tokenInput) {
           tokenInput.value = token;
@@ -192,12 +167,140 @@ function init(): void {
           tokenInput.select();
         }
         if (tokenState) tokenState.textContent = '••••••••';
-        showError(t('regenDone'));
+        showError(getString('prefs-regen-done'));
       } catch (e: any) {
-        showError(t('saveFail') + (e?.message || e));
+        showError(getString('prefs-save-fail', { error: errMsg(e) }));
       }
     });
   }
+}
+
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e ?? '');
+}
+
+// ──────────── 快捷键配置（需求单 需求6） ────────────
+
+function showShortcutError(msg: string): void {
+  const el = $('st-shortcut-err');
+  if (!el) return;
+  el.textContent = msg;
+  (el as HTMLElement).hidden = false;
+}
+
+function clearShortcutError(): void {
+  const el = $('st-shortcut-err');
+  if (!el) return;
+  (el as HTMLElement).hidden = true;
+  el.textContent = '';
+}
+
+/**
+ * 快捷键配置区初始化：
+ * - 启用开关 / Mac-Win 按键字母：读偏好回填，修改即写偏好（实时生效，
+ *   ui.ts 的 keydown handler 每次触发时重读偏好，无需重新注册）
+ * - 非法输入（非单个字母/数字）拒绝保存并给出可见提示
+ * - 按键命中已知 Zotero 占用组合时给出可见冲突提示（不静默失效）
+ */
+function initShortcutConfig(): void {
+  const enableEl = $('st-shortcut-enabled') as any;
+  const macEl = $('st-shortcut-key-mac') as HTMLInputElement | null;
+  const winEl = $('st-shortcut-key-win') as HTMLInputElement | null;
+  const warnEl = $('st-shortcut-warn');
+  const labelEl = $('st-shortcut-key');
+  if (!enableEl && !macEl && !winEl) return;
+
+  const refreshLabel = (): void => {
+    if (labelEl) {
+      try {
+        labelEl.textContent = getPanelShortcutLabel();
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  /** 当前平台生效按键是否冲突 → 可见提示 */
+  const refreshWarn = (): void => {
+    if (!warnEl) return;
+    let cur: string;
+    try {
+      cur = isMacPlatform()
+        ? normalizeShortcutKey(macEl?.value ?? prefs.get(PREFS.SHORTCUT_KEY_MAC, 'J'))
+        : normalizeShortcutKey(winEl?.value ?? prefs.get(PREFS.SHORTCUT_KEY_WIN, 'J'));
+    } catch {
+      cur = 'J';
+    }
+    if (isShortcutKeyReserved(cur)) {
+      warnEl.textContent = getString('prefs-shortcut-conflict-warn', { key: cur });
+      (warnEl as HTMLElement).hidden = false;
+    } else {
+      (warnEl as HTMLElement).hidden = true;
+      warnEl.textContent = '';
+    }
+  };
+
+  const bindKeyInput = (
+    input: HTMLInputElement | null,
+    prefKey: string
+  ): void => {
+    if (!input) return;
+    input.addEventListener('change', () => {
+      clearShortcutError();
+      const c = String(input.value ?? '').trim().toUpperCase();
+      if (!/^[A-Z0-9]$/.test(c)) {
+        showShortcutError(getString('prefs-shortcut-invalid'));
+        try {
+          input.value = normalizeShortcutKey(prefs.get(prefKey, 'J'));
+        } catch {
+          // ignore
+        }
+        refreshWarn();
+        return;
+      }
+      try {
+        prefs.set(prefKey, c);
+        input.value = c;
+      } catch (e) {
+        showShortcutError(getString('prefs-save-fail', { error: errMsg(e) }));
+      }
+      refreshLabel();
+      refreshWarn();
+    });
+    // 输入过程中即时刷新冲突提示
+    input.addEventListener('input', () => refreshWarn());
+  };
+
+  try {
+    if (enableEl) (enableEl as any).checked = isShortcutEnabled();
+    if (macEl) macEl.value = normalizeShortcutKey(prefs.get(PREFS.SHORTCUT_KEY_MAC, 'J'));
+    if (winEl) winEl.value = normalizeShortcutKey(prefs.get(PREFS.SHORTCUT_KEY_WIN, 'J'));
+  } catch {
+    // 偏好不可读时保持 xhtml 默认值
+  }
+
+  if (enableEl) {
+    enableEl.addEventListener('command', () => {
+      clearShortcutError();
+      try {
+        prefs.set(PREFS.SHORTCUT_ENABLED, !!enableEl.checked);
+      } catch (e) {
+        showShortcutError(getString('prefs-save-fail', { error: errMsg(e) }));
+        try {
+          enableEl.checked = isShortcutEnabled();
+        } catch {
+          // ignore
+        }
+      }
+      refreshLabel();
+    });
+  }
+
+  bindKeyInput(macEl, PREFS.SHORTCUT_KEY_MAC);
+  bindKeyInput(winEl, PREFS.SHORTCUT_KEY_WIN);
+
+  refreshLabel();
+  refreshWarn();
 }
 
 if (document.readyState === 'loading') {

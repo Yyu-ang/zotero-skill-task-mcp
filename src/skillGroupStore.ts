@@ -23,6 +23,7 @@ import {
   uid,
 } from './types';
 import { LIMITS, log, error, truncateForDisplay } from './utils';
+import { traced } from './utils/trace';
 import { assertValidDeliverable } from './deliverables';
 
 /** 持久化文件名 */
@@ -139,6 +140,7 @@ export class SkillGroupStore implements ISkillGroupStore {
 
   // ──────────── 变更（全部写穿落盘） ────────────
 
+  @traced
   async create(data: SkillGroupCreateData): Promise<SkillGroup> {
     // store 层校验（面板侧已有校验，这里是第二道防线，错误为中文可直接展示）
     const name = assertValidName(data.name);
@@ -165,6 +167,7 @@ export class SkillGroupStore implements ISkillGroupStore {
     return clone(sg);
   }
 
+  @traced
   async update(id: string, patch: SkillGroupPatch): Promise<SkillGroup> {
     const sg = this.findOrThrow(id);
 
@@ -192,6 +195,7 @@ export class SkillGroupStore implements ISkillGroupStore {
     return clone(sg);
   }
 
+  @traced
   async setEnabled(id: string, enabled: boolean): Promise<void> {
     const sg = this.findOrThrow(id);
     if (sg.enabled === enabled) {
@@ -202,6 +206,7 @@ export class SkillGroupStore implements ISkillGroupStore {
     await this.persist();
   }
 
+  @traced
   async copy(id: string): Promise<SkillGroup> {
     const src = this.findOrThrow(id);
     const now = Date.now();
@@ -222,6 +227,7 @@ export class SkillGroupStore implements ISkillGroupStore {
     return clone(sg);
   }
 
+  @traced
   async archive(id: string): Promise<void> {
     const sg = this.findOrThrow(id);
     // 归档 = 软删除：不再生成新任务（生成器只扫描 enabled && !archived）
@@ -231,6 +237,7 @@ export class SkillGroupStore implements ISkillGroupStore {
     await this.persist();
   }
 
+  @traced
   async remove(id: string): Promise<void> {
     const sg = this.findOrThrow(id);
     if (!sg.archived) {

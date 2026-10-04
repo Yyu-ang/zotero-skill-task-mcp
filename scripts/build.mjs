@@ -32,6 +32,20 @@ const XPI_NAME = `${pkg.name}-${pkg.version}.xpi`;
 async function main() {
   const start = Date.now();
 
+  // ── Step 0: 生成 JS 侧国际化数据（src/utils/locale-data.ts）──
+  // 需求单 需求1：JS 动态文案以 addon/locale/*/skill-task.ftl 为唯一来源，
+  // 构建时提取并做 key 一致性校验（无死 key、无缺 key），getString() 保持同步调用。
+  execSync(`"${process.execPath}" "${resolve(ROOT, 'scripts/gen-locale.mjs')}"`, {
+    stdio: 'inherit',
+  });
+
+  // ── 构建环境标识（需求单 需求2：生产环境日志收敛）──
+  // esbuild `define` 在编译期把 __SKILLTASK_ENV__ 替换为字面量；
+  // src/utils.ts 据此在生产构建下静默 log()（info/debug 级），error() 保留。
+  const envDefine = {
+    __SKILLTASK_ENV__: JSON.stringify(isDev ? 'development' : 'production'),
+  };
+
   // ── Step 1: esbuild 打包 ──
   const result = await esbuild.build({
     entryPoints: [resolve(ROOT, 'src/index.ts')],
@@ -44,6 +58,7 @@ async function main() {
     minify: !isDev,
     treeShaking: true,
     legalComments: 'inline',
+    define: envDefine,
     // zotero-types 仅提供类型定义，不参与运行时打包
     external: [],
   });
@@ -65,6 +80,7 @@ async function main() {
     minify: !isDev,
     treeShaking: true,
     legalComments: 'inline',
+    define: envDefine,
     // zotero-types 仅提供类型定义，不参与运行时打包
     external: [],
   });
@@ -86,6 +102,7 @@ async function main() {
     minify: !isDev,
     treeShaking: true,
     legalComments: 'inline',
+    define: envDefine,
   });
 
   if (prefsResult.errors.length) {

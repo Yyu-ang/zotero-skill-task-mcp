@@ -24,6 +24,7 @@ import {
   uid,
 } from './types';
 import { LIMITS, error, log, truncateForDisplay } from './utils';
+import { traced } from './utils/trace';
 import { getLeaseMs } from './prefs';
 
 /** 任务文件的文件名（位于 Zotero 数据目录下 DATA_DIR_NAME 目录内） */
@@ -186,6 +187,7 @@ export class TaskStore implements ITaskStore {
    * - id 用 uid() 生成；status 默认 'pending'，也可传入 'waiting-material'；
    * - attempts=0、leaseExpiresAt=null、lastError=null、noteKey=null，时间戳齐全。
    */
+  @traced
   async create(data: TaskCreateData): Promise<Task> {
     const status: TaskStatus = data.status ?? 'pending';
     if (status !== 'pending' && status !== 'waiting-material') {
@@ -226,6 +228,7 @@ export class TaskStore implements ITaskStore {
    * 标记 claimed + 租约过期时间 + claimedAt + attempts+1 后落盘返回；
    * 无任务时返回 null。
    */
+  @traced
   async claimNext(
     skillGroupId: string | undefined,
     leaseMs: number
@@ -265,6 +268,7 @@ export class TaskStore implements ITaskStore {
    * 释放过期租约：claimed 且 leaseExpiresAt <= now 的转回 pending（leaseExpiresAt 置 null），
    * 返回释放数量。claimedAt 保留为上次领取时间的历史记录。
    */
+  @traced
   async releaseExpiredLeases(now: number = Date.now()): Promise<number> {
     let released = 0;
     for (const task of this.tasks.values()) {
@@ -289,6 +293,7 @@ export class TaskStore implements ITaskStore {
    * 完成任务：置 done、completedAt=now、记录交付物引用，并清除租约。
    * 已 done 直接返回原任务（幂等：重复提交不抛错、引用不变）。
    */
+  @traced
   async complete(id: string, result: TaskCompleteResult): Promise<Task> {
     const task = this.require(id);
     if (task.status === 'done') {
@@ -327,6 +332,7 @@ export class TaskStore implements ITaskStore {
    * 已完成任务不允许标记为失败（笔记已写回，状态不可回退）。
    * 失败原因超长时抛中文错，调用方应先截断。
    */
+  @traced
   async fail(id: string, errorMsg: string): Promise<Task> {
     const task = this.require(id);
     if (task.status === 'done') {
@@ -347,6 +353,7 @@ export class TaskStore implements ITaskStore {
    * 取消任务：非 done 的置 cancelled 并清除租约。
    * 已完成任务拒绝取消并抛中文错（FR-11：已完成任务和既有笔记默认保留）。
    */
+  @traced
   async cancel(id: string): Promise<void> {
     const task = this.require(id);
     if (task.status === 'done') {
@@ -362,6 +369,7 @@ export class TaskStore implements ITaskStore {
    * 仅当任务处于 pending 时才标记 claimed + 租约 + attempts+1 并返回；
    * 已被并发领取走时返回 null（调用方继续试下一条），不抛错。
    */
+  @traced
   async claimById(id: string, leaseMs: number): Promise<Task | null> {
     const task = this.tasks.get(id);
     if (!task || task.status !== 'pending') {
@@ -384,6 +392,7 @@ export class TaskStore implements ITaskStore {
    * 用于"技能组在领取瞬间被停用/归档"等竞态，放回后任务可被重新领取。
    * 只允许 claimed 状态；清除租约，attempts 保留（不算一次新的领取尝试）。
    */
+  @traced
   async requeue(id: string): Promise<Task> {
     const task = this.require(id);
     if (task.status !== 'claimed') {
@@ -396,6 +405,7 @@ export class TaskStore implements ITaskStore {
   }
 
   /** 重试失败任务：failed → pending 并清空 lastError（attempts 保留）。非 failed 状态抛错。 */
+  @traced
   async retry(id: string): Promise<void> {
     const task = this.require(id);
     if (task.status !== 'failed') {
@@ -410,6 +420,7 @@ export class TaskStore implements ITaskStore {
    * 材料后到时调用：waiting-material → pending。
    * 非等待材料状态（或任务不存在时不存在抛错）返回 null。
    */
+  @traced
   async promoteToPending(id: string): Promise<Task | null> {
     const task = this.require(id);
     if (task.status !== 'waiting-material') {

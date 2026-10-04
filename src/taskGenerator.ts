@@ -20,6 +20,7 @@ import {
   SkillGroup,
 } from './types';
 import { log, error } from './utils';
+import { traced } from './utils/trace';
 
 /** 扫描分块大小：每块从 Zotero 一次加载的条目数 */
 const SCAN_CHUNK_SIZE = 200;
@@ -162,15 +163,26 @@ export class TaskGenerator implements ITaskGenerator {
   private readonly tasks: ITaskStore;
   private observerId: string | null = null;
   /**
+   * 插件存活检查（需求单 需求4：由 core.ts 传入 () => core.alive）。
+   * notifier 是长驻回调：触发时若插件已卸载，自注销并直接返回。
+   */
+  private readonly isAliveFn: (() => boolean) | null;
+  /**
    * 扫描并发 guard（service 层第二道；面板侧另有 scanBusy 第一道）：
    * 同一技能组同时只允许一次扫描，防止并发扫描在"去重检查→创建"之间
    * 的 await 间隙重复建任务，破坏"技能组 × 条目"唯一性。
    */
   private readonly scanLocks = new Set<string>();
 
-  constructor(deps: { skillGroups: ISkillGroupStore; tasks: ITaskStore }) {
+  constructor(deps: {
+    skillGroups: ISkillGroupStore;
+    tasks: ITaskStore;
+    /** 可选：插件存活检查（core.ts 传入；缺省时不做守卫） */
+    isAlive?: () => boolean;
+  }) {
     this.skillGroups = deps.skillGroups;
     this.tasks = deps.tasks;
+    this.isAliveFn = deps.isAlive ?? null;
   }
 
   // ──────────── 扫描 ────────────
@@ -180,6 +192,7 @@ export class TaskGenerator implements ITaskGenerator {
    * 技能组不存在 / 已归档 / 已停用时返回全零结果，不生成任何任务。
    * 支持 AbortSignal 中断：扫描本身幂等，中断后重跑可续（已创建的不重复）。
    */
+  @traced
   async scanSkillGroup(
     skillGroupId: string,
     opts: ScanOptions = {},
@@ -258,6 +271,7 @@ export class TaskGenerator implements ITaskGenerator {
   }
 
   /** 逐个扫描所有启用且未归档的技能组 */
+  @traced
   async scanAllEnabled(opts: ScanOptions = {}): Promise<ScanResult[]> {
     const results: ScanResult[] = [];
     for (const sg of this.enabledSkillGroups()) {
@@ -289,6 +303,16 @@ export class TaskGenerator implements ITaskGenerator {
           ids: Array<string | number>,
           _extraData: any
         ) => {
+          // 需求4：长驻回调存活守卫 —— 插件已卸载则自注销并直接返回
+          if (this.isAliveFn && !this.isAliveFn()) {
+            try {
+              Z.Notifier.unregisterObserver(id);
+            } catch {
+              // ignore
+            }
+            this.observerId = null;
+            return;
+          }
           if (event !== 'add') return;
           await this.handleItemsAdded(ids);
         },

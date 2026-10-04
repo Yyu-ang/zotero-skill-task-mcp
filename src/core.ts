@@ -39,6 +39,13 @@ export class PluginCore {
   private api: SkillTaskAPI | null = null;
   /** 租约过期释放定时器（5 分钟） */
   private leaseTimer: any = null;
+  /**
+   * 存活标志（需求单 需求4：长驻回调存活守卫）。
+   * startup 完成置 true；shutdown 入口置 false。
+   * notifier 回调、租约 timer、快捷键回调入口先查此标志：
+   * 已卸载则自注销监听/清除 timer 并直接返回，不操作已释放资源。
+   */
+  private alive: boolean = false;
 
   // ──────────── 生命周期 ────────────
 
@@ -62,6 +69,10 @@ export class PluginCore {
     log(`Starting up v${this.version}`);
     log(`Zotero version: ${Zotero.version}`);
 
+    // 需求单 需求3：等待 Zotero 完全就绪后再跑 store 加载，
+    // 冷启动时序下避免踩空（各 Promise 做可用性检查，Zotero 9 兼容）。
+    await this.waitForZoteroReady();
+
     // 注册“工具”菜单入口（Zotero 8+ 官方 MenuManager API）
     this.menuID = registerToolsMenu(this.id, this.rootURI);
 
@@ -71,7 +82,12 @@ export class PluginCore {
       const tasks = await TaskStore.load();
       // 启动时释放过期租约（重启可恢复，FR-10）
       await tasks.releaseExpiredLeases();
-      const generator = new TaskGenerator({ skillGroups, tasks });
+      const generator = new TaskGenerator({
+        skillGroups,
+        tasks,
+        // 需求4：notifier 回调存活守卫
+        isAlive: () => this.alive,
+      });
       const mcp = new McpServer({
         skillGroups,
         tasks,
@@ -88,6 +104,12 @@ export class PluginCore {
       (Zotero as any).SkillTask = this.api;
       // 定时释放过期租约（5 分钟），避免长会话中任务被租约卡住
       this.leaseTimer = setInterval(() => {
+        // 需求4：插件已卸载则自清除 timer 并返回，不操作已释放资源
+        if (!this.alive) {
+          clearInterval(this.leaseTimer);
+          this.leaseTimer = null;
+          return;
+        }
         tasks.releaseExpiredLeases().catch((e) => log(`Lease release failed: ${e}`));
       }, 5 * 60 * 1000);
       log('Skill Task business modules wired');
@@ -101,6 +123,8 @@ export class PluginCore {
     this.watchNewWindows();
 
     this.initialized = true;
+    // 需求4：存活标志置 true（shutdown 入口置 false）
+    this.alive = true;
 
     // P0 修复：startup() 是 async，bootstrap.js 里紧随其后的
     // addToAllWindows?.() 因 initialized 仍为 false 被全部跳过，
@@ -139,6 +163,10 @@ export class PluginCore {
    */
   shutdown(_data?: any): void {
     if (!this.initialized) return;
+
+    // 需求4：先置存活标志为 false，长驻回调（notifier/timer/快捷键）
+    // 在入口处自查并自注销，不再操作随后释放的资源
+    this.alive = false;
 
     log('Shutting down Skill Task');
 
@@ -213,7 +241,8 @@ export class PluginCore {
   onMainWindowLoad({ window }: { window: Window }): void {
     if (!this.initialized) return;
     insertFluent(window);
-    attachPanelShortcut(window, this.rootURI);
+    // 需求4：快捷键回调入口带存活守卫
+    attachPanelShortcut(window, this.rootURI, () => this.alive);
   }
 
   /**
@@ -250,6 +279,41 @@ export class PluginCore {
   }
 
   // ──────────── 内部方法 ────────────
+
+  /**
+   * 需求单 需求3：等待 Zotero 完全就绪。
+   * 逐个检查 initializationPromise / unlockPromise / uiReadyPromise 的可用性
+   * （thenable 才等待），任一不可用直接跳过，不硬编码假设——兼容 Zotero 9+。
+   * 等待本身抛错不中断启动（降级为直接启动，避免插件被卡死）。
+   */
+  private async waitForZoteroReady(): Promise<void> {
+    const Z: any = typeof Zotero !== 'undefined' ? Zotero : undefined;
+    const pending: Array<Promise<unknown>> = [];
+    for (const key of [
+      'initializationPromise',
+      'unlockPromise',
+      'uiReadyPromise',
+    ]) {
+      try {
+        const p = Z?.[key];
+        if (p && typeof p.then === 'function') {
+          pending.push(p as Promise<unknown>);
+        }
+      } catch {
+        // ignore：单个 Promise 不可读不影响其他
+      }
+    }
+    if (!pending.length) {
+      log('Zotero readiness promises 不可用，跳过等待（版本兼容）');
+      return;
+    }
+    try {
+      await Promise.all(pending);
+      log('Zotero ready, continuing startup');
+    } catch (e) {
+      log(`等待 Zotero 就绪时异常，降级继续启动: ${e}`);
+    }
+  }
 
   /**
    * 监听后续打开的窗口，主窗口加载完成后注入 Fluent。

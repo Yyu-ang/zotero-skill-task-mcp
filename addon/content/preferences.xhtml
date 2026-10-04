@@ -69,6 +69,25 @@
       <label id="st-shortcut-key" style="font-family: monospace;">Ctrl+Shift+J</label>
       <description data-l10n-id="skill-task-prefs-shortcut-desc">打开技能任务管理面板（输入框内不触发）</description>
     </hbox>
+
+    <!-- 需求单 需求6：快捷键可配置化（JS 驱动：需校验 + 冲突提示） -->
+    <hbox align="center">
+      <checkbox id="st-shortcut-enabled" native="true"
+                data-l10n-id="skill-task-prefs-shortcut-enable" label="启用面板快捷键"/>
+    </hbox>
+    <hbox align="center">
+      <label data-l10n-id="skill-task-prefs-shortcut-key-mac" for="st-shortcut-key-mac">按键（macOS，⌘+Shift+）</label>
+      <html:input id="st-shortcut-key-mac" type="text" maxlength="1" size="2"
+                  style="font-family: monospace; text-transform: uppercase;"/>
+    </hbox>
+    <hbox align="center">
+      <label data-l10n-id="skill-task-prefs-shortcut-key-win" for="st-shortcut-key-win">按键（Windows/Linux，Ctrl+Shift+）</label>
+      <html:input id="st-shortcut-key-win" type="text" maxlength="1" size="2"
+                  style="font-family: monospace; text-transform: uppercase;"/>
+    </hbox>
+    <description id="st-shortcut-warn" hidden="true" style="color: #b45309;"/>
+    <description id="st-shortcut-err" hidden="true" style="color: #c00;"/>
+    <description data-l10n-id="skill-task-prefs-shortcut-hint">单个字母或数字；修改实时生效，无需重启。</description>
   </groupbox>
 
 </vbox>

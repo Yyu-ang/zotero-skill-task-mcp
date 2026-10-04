@@ -37,6 +37,7 @@ import { DATA_DIR_NAME } from './types';
 import { resolveEarliestPdfPath } from './taskGenerator';
 import { prefs, getLeaseMs } from './prefs';
 import { LIMITS, error as logError, log, truncateForDisplay } from './utils';
+import { traced } from './utils/trace';
 import {
   DELIVERABLES_DIR_NAME,
   normalizeDeliverable,
@@ -585,6 +586,7 @@ export class McpServer implements IMcpServer {
    * claimById 只对仍为 pending 的任务加 claimed 标记，被并发抢走返回 null
    * 继续试下一条；快照之后新建的任务本轮可能 miss，客户端下次轮询即得。
    */
+  @traced
   private async claim(params: any): Promise<ClaimResult> {
     const skillGroupId: string | undefined =
       typeof params?.skillGroupId === 'string' && params.skillGroupId
@@ -774,6 +776,7 @@ export class McpServer implements IMcpServer {
    *   保留未完成可重试
    * - 已完成 + 有交付物引用 → 幂等返回，不产生第二个交付物
    */
+  @traced
   private async submit(params: any): Promise<SubmitResult> {
     // 防御：taskId 必须为非空字符串（外部输入先做类型守卫）
     const taskId =

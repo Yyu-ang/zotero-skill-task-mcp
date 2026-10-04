@@ -1,13 +1,40 @@
 /**
  * src/utils.ts — 日志工具
+ *
+ * 日志分级（需求单 需求2：生产环境日志收敛）：
+ * - log()    = info/debug 级：生产构建下静默（构建期经 esbuild define 注入 __SKILLTASK_ENV__）
+ * - error()  = 错误级：始终输出，保证生产环境仍可定位问题
  */
+
+// 构建期由 scripts/build.mjs 经 esbuild `define` 注入；tsc/测试等未注入场景视为开发环境
+declare const __SKILLTASK_ENV__: string | undefined;
+
+/** 当前构建环境（'production' | 'development'） */
+function currentEnv(): string {
+  try {
+    if (
+      typeof __SKILLTASK_ENV__ !== 'undefined' &&
+      __SKILLTASK_ENV__
+    ) {
+      return __SKILLTASK_ENV__;
+    }
+  } catch {
+    // ignore
+  }
+  return 'development';
+}
+
+/** 是否为生产构建 */
+export const IS_PRODUCTION: boolean = currentEnv() === 'production';
 
 const PREFIX = '[SkillTask]';
 
 /**
- * 普通日志。
+ * 普通日志（info/debug 级）。
+ * 生产构建下静默，避免生产包刷屏控制台；错误请用 error()。
  */
 export function log(...args: any[]): void {
+  if (IS_PRODUCTION) return;
   // eslint-disable-next-line no-console
   console.log(PREFIX, ...args);
 }

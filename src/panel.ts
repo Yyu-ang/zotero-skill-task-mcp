@@ -8,7 +8,8 @@
  * SkillTaskAPI；若挂载缺失则显示降级提示，不抛异常。
  *
  * 三个选项卡：技能组（CRUD）/ 任务（按技能组分组的各状态明细）/ MCP 服务（开关+状态+token）。
- * 所有异步操作均 try/catch 并在面板顶部显示中文错误提示。
+ * 所有异步操作均 try/catch 并在面板顶部显示本地化错误提示（getString）。
+ * 静态 xhtml 文案在 init() 经 applyStaticI18n() 本地化。
  *
  * 视觉体系（与 panel.xhtml 设计令牌配套）：
  * - 图标：单一 feather 风格 inline SVG（1.5px 描边，currentColor），
@@ -30,6 +31,7 @@ import type {
   TaskStatus,
 } from './types';
 import { deliverableLabel } from './deliverables';
+import { initLocale, getString } from './utils/locale';
 
 /** 选项卡 id */
 type TabId = 'skills' | 'tasks' | 'mcp';
@@ -102,12 +104,12 @@ function iconEl(name: string, cls = 'ic'): HTMLSpanElement {
 
 /** 任务状态元信息：中文标签 / 徽章颜色类 / 图标 */
 const STATUS_META: Record<TaskStatus, { label: string; badge: string; icon: string }> = {
-  'waiting-material': { label: '等待材料', badge: 'warn', icon: 'clock' },
-  pending: { label: '待领取', badge: 'accent', icon: 'inbox' },
-  claimed: { label: '已领取', badge: 'accent', icon: 'zap' },
-  done: { label: '已完成', badge: 'ok', icon: 'check-circle' },
-  failed: { label: '失败待重试', badge: 'danger', icon: 'alert-circle' },
-  cancelled: { label: '已取消', badge: 'muted', icon: 'x-circle' },
+  'waiting-material': { label: getString('panel-status-waiting-material'), badge: 'warn', icon: 'clock' },
+  pending: { label: getString('panel-status-pending'), badge: 'accent', icon: 'inbox' },
+  claimed: { label: getString('panel-status-claimed'), badge: 'accent', icon: 'zap' },
+  done: { label: getString('panel-status-done'), badge: 'ok', icon: 'check-circle' },
+  failed: { label: getString('panel-status-failed'), badge: 'danger', icon: 'alert-circle' },
+  cancelled: { label: getString('panel-status-cancelled'), badge: 'muted', icon: 'x-circle' },
 };
 
 /** 非已完成状态的展示顺序 */
@@ -140,7 +142,7 @@ function statusBadge(st: TaskStatus): HTMLElement {
 /** 技能组状态徽章（图标+文字） */
 function groupBadge(sg: SkillGroup): HTMLElement {
   const kind = sg.archived ? 'warn' : sg.enabled ? 'ok' : 'muted';
-  const text = sg.archived ? '已归档' : sg.enabled ? '启用中' : '已停用';
+  const text = sg.archived ? getString('panel-sg-archived') : sg.enabled ? getString('panel-sg-enabled') : getString('panel-sg-disabled');
   const icon = sg.archived ? 'archive' : sg.enabled ? 'check-circle' : 'pause';
   const b = el('span', `badge ${kind}`);
   b.append(iconEl(icon, 'ic ic-sm'), document.createTextNode(text));
@@ -168,7 +170,7 @@ function getAPI(): SkillTaskAPI | undefined {
 function $<T extends HTMLElement>(id: string): T {
   const e = document.getElementById(id);
   if (!e) {
-    throw new Error(`面板元素缺失: #${id}`);
+    throw new Error(getString('panel-err-missing-element', { id }));
   }
   return e as T;
 }
@@ -209,22 +211,22 @@ function fmtRelative(ts: number | null | undefined): string {
   }
   const diff = Date.now() - ts;
   if (diff < 0) {
-    return '刚刚';
+    return getString('panel-time-just-now');
   }
   const minutes = Math.floor(diff / 60000);
   if (minutes < 1) {
-    return '刚刚';
+    return getString('panel-time-just-now');
   }
   if (minutes < 60) {
-    return `${minutes} 分钟前`;
+    return getString('panel-time-minutes-ago', { n: minutes });
   }
   const hours = Math.floor(minutes / 60);
   if (hours < 24) {
-    return `${hours} 小时前`;
+    return getString('panel-time-hours-ago', { n: hours });
   }
   const days = Math.floor(hours / 24);
   if (days < 30) {
-    return `${days} 天前`;
+    return getString('panel-time-days-ago', { n: days });
   }
   return fmtTime(ts);
 }
@@ -268,7 +270,7 @@ function opBtn(
   b.addEventListener('click', () => {
     void Promise.resolve()
       .then(() => onClick(b))
-      .catch((e: unknown) => showError(`操作失败：${errMsg(e)}`));
+      .catch((e: unknown) => showError(getString('panel-err-op-failed', { error: errMsg(e) })));
   });
   return b;
 }
@@ -314,17 +316,17 @@ async function copyText(text: string, btn: HTMLButtonElement): Promise<void> {
       ta.remove();
     }
     if (!ok) {
-      throw new Error('剪贴板不可用');
+      throw new Error(getString('panel-err-clipboard-unavailable'));
     }
     const orig = btn.innerHTML;
-    btn.innerHTML = `${iconSVG('check', 'ic')}已复制`;
+    btn.innerHTML = `${iconSVG('check', 'ic')}${getString('panel-copied')}`;
     btn.disabled = true;
     window.setTimeout(() => {
       btn.innerHTML = orig;
       btn.disabled = false;
     }, 1200);
   } catch (e) {
-    showError(`复制失败：${errMsg(e)}，请手动复制。`);
+    showError(getString('panel-err-copy-failed-manual', { error: errMsg(e) }));
   }
 }
 
@@ -334,7 +336,7 @@ function renderSkeleton(tab: TabId): void {
   root.replaceChildren();
   const wrap = el('div');
   wrap.setAttribute('role', 'status');
-  wrap.setAttribute('aria-label', '加载中');
+  wrap.setAttribute('aria-label', getString('panel-aria-loading'));
   const bar = (w: string, h = 14): HTMLElement => {
     const b = el('div', 'skel');
     b.style.width = w;
@@ -388,13 +390,88 @@ const expandedTasks = new Set<string>();
 /** MCP 审计视图展示的最近事件条数 */
 const AUDIT_LIMIT = 20;
 
+// ────────────────────────── 静态文案国际化 ──────────────────────────
+
+/**
+ * 替换"图标 + 文字"按钮里的文字节点（保留 inline SVG）。
+ */
+function setStaticText(id: string, text: string): void {
+  const btn = document.getElementById(id);
+  if (!btn) return;
+  for (const child of Array.from(btn.childNodes)) {
+    if (!child) continue;
+    if (child.nodeType === Node.TEXT_NODE && (child.textContent ?? '').trim()) {
+      child.textContent = text;
+      return;
+    }
+  }
+  btn.textContent = text;
+}
+
+/**
+ * panel.xhtml 里硬编码的静态文案（title/按钮/选项卡/降级提示）同样走 getString()，
+ * 保证 Zotero 界面语言为英文时面板无中文残留（需求单 需求1 验收）。
+ * 在 init() 最开头调用；任一元素缺失不抛错（防御性）。
+ */
+function applyStaticI18n(): void {
+  try {
+    document.title = getString('panel-doc-title');
+  } catch {
+    // ignore
+  }
+  try {
+    const h1 = document.querySelector('header.top h1');
+    if (h1) {
+      for (const child of Array.from(h1.childNodes)) {
+        if (!child) continue;
+        if (
+          child.nodeType === Node.TEXT_NODE &&
+          (child.textContent ?? '').trim()
+        ) {
+          child.textContent = getString('panel-app-title');
+          break;
+        }
+      }
+    }
+    const setTitle = (id: string, text: string): void => {
+      const el = document.getElementById(id);
+      if (el) el.title = text;
+    };
+    setTitle('btn-quick', getString('panel-qa-title-attr'));
+    setTitle('btn-refresh', getString('panel-btn-refresh-title'));
+    setTitle('btn-close', getString('panel-btn-close-title'));
+    setTitle('error-close', getString('panel-err-close-title'));
+    setTitle('global-close', getString('panel-prog-close-title'));
+    setStaticText('btn-quick', getString('panel-qa-label'));
+    setStaticText('qa-scan-all', getString('panel-qa-scan-all'));
+    setStaticText('btn-refresh', getString('panel-btn-refresh'));
+    setStaticText('btn-close', getString('panel-btn-close'));
+    setStaticText('tabbtn-skills', getString('panel-tab-skills'));
+    setStaticText('tabbtn-tasks', getString('panel-tab-tasks'));
+    setStaticText('tabbtn-mcp', getString('panel-tab-mcp'));
+    // 插件核心未挂载时的降级提示
+    const nrTitle = document.querySelector('#not-ready h3');
+    if (nrTitle) nrTitle.textContent = getString('panel-notready-title');
+    const nrDesc = document.querySelector('#not-ready p');
+    if (nrDesc) nrDesc.textContent = getString('panel-notready-desc');
+    setStaticText('btn-notready-retry', getString('panel-notready-retry'));
+  } catch {
+    // 静态文案本地化失败不阻塞面板初始化
+  }
+}
+
 // ────────────────────────── 初始化 ──────────────────────────
 
 function init(): void {
+  // 需求单 需求1：JS 侧 Fluent 国际化（文案唯一来源为 ftl，构建时提取）
+  initLocale();
+  // panel.xhtml 里的静态文案（title/按钮/选项卡/降级提示）同样走 getString
+  applyStaticI18n();
+
   // 静态按钮绑定
   $<HTMLButtonElement>('btn-refresh').addEventListener('click', () => {
     clearError();
-    void refreshAll().catch((e: unknown) => showError(`刷新失败：${errMsg(e)}`));
+    void refreshAll().catch((e: unknown) => showError(getString('panel-err-refresh-failed', { error: errMsg(e) })));
   });
   $<HTMLButtonElement>('btn-close').addEventListener('click', () => {
     window.close();
@@ -422,7 +499,7 @@ function init(): void {
   renderSkeleton('skills');
   renderSkeleton('tasks');
   renderSkeleton('mcp');
-  void refreshAll().catch((e: unknown) => showError(`加载失败：${errMsg(e)}`));
+  void refreshAll().catch((e: unknown) => showError(getString('panel-err-load-failed', { error: errMsg(e) })));
 }
 
 /** 切换选项卡 */
@@ -433,7 +510,7 @@ function switchTab(tab: TabId): void {
     $<HTMLButtonElement>(`tabbtn-${t}`).classList.toggle('active', t === tab);
     $<HTMLElement>(`tab-${t}`).hidden = t !== tab;
   }
-  void refreshTab(tab).catch((e: unknown) => showError(`加载失败：${errMsg(e)}`));
+  void refreshTab(tab).catch((e: unknown) => showError(getString('panel-err-load-failed', { error: errMsg(e) })));
 }
 
 /** 刷新全部选项卡 */
@@ -473,7 +550,7 @@ function statBar(counts: Record<TaskStatus, number>): HTMLElement {
     cancelled: 'st-cancelled',
   };
   if (total === 0) {
-    const ph = el('div', 'statbar-empty', '暂无任务');
+    const ph = el('div', 'statbar-empty', getString('panel-statbar-empty'));
     bar.append(ph);
   } else {
     for (const st of STATBAR_ORDER) {
@@ -489,11 +566,11 @@ function statBar(counts: Record<TaskStatus, number>): HTMLElement {
   }
   const desc =
     total === 0
-      ? '暂无任务'
+      ? getString('panel-statbar-empty')
       : STATBAR_ORDER.map((st) => `${STATUS_META[st].label} ${counts[st] ?? 0}`)
           .join('，');
   bar.setAttribute('role', 'img');
-  bar.setAttribute('aria-label', `任务状态分布：${desc}`);
+  bar.setAttribute('aria-label', getString('panel-statbar-aria', { desc }));
   wrap.append(bar);
 
   // 图例：色点 + 图标 + 标签 + 计数
@@ -545,44 +622,44 @@ function skillCard(sg: SkillGroup): HTMLElement {
   // 更新时间（相对时间，title 里放绝对时间）
   const meta = el('div', 'meta-line');
   meta.append(iconEl('clock', 'ic ic-sm'));
-  const rel = el('span', 'reltime', `更新于 ${fmtRelative(sg.updatedAt)}`);
+  const rel = el('span', 'reltime', getString('panel-sg-updated-at', { time: fmtRelative(sg.updatedAt) }));
   rel.title = fmtTime(sg.updatedAt);
   meta.append(rel);
   card.append(meta);
 
   const ops = el('div', 'ops');
   ops.append(
-    opBtn('编辑', () => openForm(sg.id), { icon: 'edit', title: '编辑技能组' })
+    opBtn(getString('panel-action-edit'), () => openForm(sg.id), { icon: 'edit', title: getString('panel-action-edit-sg-title') })
   );
   ops.append(
-    opBtn(sg.enabled ? '停用' : '启用', () => setSkillEnabled(sg, !sg.enabled), {
+    opBtn(sg.enabled ? getString('panel-action-disable') : getString('panel-action-enable'), () => setSkillEnabled(sg, !sg.enabled), {
       icon: sg.enabled ? 'pause' : 'play',
-      title: sg.enabled ? '停用后不再生成新任务并暂停领取' : '重新启用技能组',
+      title: sg.enabled ? getString('panel-action-disable-title') : getString('panel-action-enable-title'),
       secondary: true,
     })
   );
   ops.append(
-    opBtn('复制', () => copySkillGroup(sg.id), {
+    opBtn(getString('panel-action-copy'), () => copySkillGroup(sg.id), {
       icon: 'copy',
-      title: '复制为新的技能组',
+      title: getString('panel-action-copy-sg-title'),
       secondary: true,
     })
   );
   if (!sg.archived) {
     ops.append(
-      opBtn('归档', () => archiveSkillGroup(sg.id), {
+      opBtn(getString('panel-action-archive'), () => archiveSkillGroup(sg.id), {
         icon: 'archive',
-        title: '归档后不再生成新任务，历史任务与笔记保留',
+        title: getString('panel-action-archive-title'),
         secondary: true,
       })
     );
   } else {
     // 硬删除仅允许已归档的技能组（存储层同样约束，这里先做界面侧限制）
     ops.append(
-      opBtn('删除', () => deleteSkillGroup(sg.id), {
+      opBtn(getString('panel-action-delete'), () => deleteSkillGroup(sg.id), {
         cls: 'danger',
         icon: 'trash',
-        title: '永久删除，不可恢复',
+        title: getString('panel-action-delete-title'),
         secondary: true,
       })
     );
@@ -602,10 +679,13 @@ function summaryLine(icon: string, text: string): HTMLElement {
 /** 范围摘要 */
 function scopeSummary(sg: SkillGroup): string {
   if (sg.scope.type === 'all') {
-    return '范围：全库';
+    return getString('panel-scope-all');
   }
   const n = sg.scope.collectionKeys.length;
-  return `范围：${n} 个集合（${sg.scope.includeSubcollections ? '含子集合' : '不含子集合'}）`;
+  return getString('panel-scope-collections', {
+    n,
+    sub: getString(sg.scope.includeSubcollections ? 'panel-scope-with-sub' : 'panel-scope-without-sub'),
+  });
 }
 
 /** 输入材料 + 交付物摘要 */
@@ -613,18 +693,21 @@ function materialsSummary(sg: SkillGroup): string {
   const m = sg.materials;
   const parts: string[] = [];
   if (m.includeMetadata) {
-    parts.push('基本信息');
+    parts.push(getString('panel-mat-metadata'));
   }
   if (m.includeAbstract) {
-    parts.push('摘要');
+    parts.push(getString('panel-mat-abstract'));
   }
   if (m.includeNotes) {
-    parts.push('已有笔记');
+    parts.push(getString('panel-mat-notes'));
   }
   if (m.pdf === 'earliest') {
-    parts.push('最早 PDF');
+    parts.push(getString('panel-mat-pdf-earliest'));
   }
-  return `材料：${parts.length ? parts.join('、') : '无'}；交付物：${deliverableLabel(sg.deliverable)}`;
+  return getString('panel-sg-summary', {
+    materials: parts.length ? parts.join(getString('panel-list-sep')) : getString('panel-summary-none'),
+    deliverable: deliverableLabel(sg.deliverable),
+  });
 }
 
 /** 渲染技能组选项卡 */
@@ -637,10 +720,10 @@ function renderSkills(): void {
 
   const topRow = el('div', 'row');
   topRow.append(
-    opBtn('新增', () => openForm(null), {
+    opBtn(getString('panel-action-add'), () => openForm(null), {
       cls: 'primary',
       icon: 'plus',
-      title: '新增技能组',
+      title: getString('panel-sg-add'),
     })
   );
   root.append(topRow);
@@ -650,9 +733,9 @@ function renderSkills(): void {
     root.append(
       emptyState(
         'package',
-        '还没有技能组',
-        '创建第一个技能组，为符合范围的文献批量生成 AI 任务。',
-        { label: '新增技能组', icon: 'plus', onClick: () => openForm(null) }
+        getString('panel-empty-no-sg-title'),
+        getString('panel-empty-no-sg-desc'),
+        { label: getString('panel-sg-add'), icon: 'plus', onClick: () => openForm(null) }
       )
     );
   }
@@ -749,30 +832,30 @@ function renderForm(wrap: HTMLElement): void {
   }
   wrap.replaceChildren();
   const editing = formState.editingId ? api.skillGroups.get(formState.editingId) : undefined;
-  wrap.append(el('h3', '', editing ? `编辑技能组「${editing.name}」` : '新增技能组'));
+  wrap.append(el('h3', '', editing ? getString('panel-form-edit-title', { name: editing.name }) : getString('panel-sg-add')));
 
   // —— 名称 ——
   const nameField = el('div', 'field');
-  nameField.append(formLabel('名称', true));
+  nameField.append(formLabel(getString('panel-form-name'), true));
   const nameInput = el('input');
   nameInput.type = 'text';
   nameInput.value = editing?.name ?? '';
-  nameInput.placeholder = '例如：文献综述初稿';
+  nameInput.placeholder = getString('panel-form-name-ph');
   nameField.append(nameInput);
   wrap.append(nameField);
 
   // —— 任务指令 ——
   const instrField = el('div', 'field');
-  instrField.append(formLabel('任务指令', true));
+  instrField.append(formLabel(getString('panel-form-instruction'), true));
   const instrInput = el('textarea');
   instrInput.value = editing?.instruction ?? '';
-  instrInput.placeholder = '发给 AI 的任务说明，例如：阅读 PDF 并撰写 300 字中文摘要…';
+  instrInput.placeholder = getString('panel-form-instruction-ph');
   instrField.append(instrInput);
   wrap.append(instrField);
 
   // —— 范围 ——
   const scopeField = el('div', 'field');
-  scopeField.append(formLabel('适用范围'));
+  scopeField.append(formLabel(getString('panel-form-scope')));
   const scopeAll = el('input');
   scopeAll.type = 'radio';
   scopeAll.name = 'scope-type';
@@ -793,10 +876,10 @@ function renderForm(wrap: HTMLElement): void {
   }
   const rowAll = el('div', 'radio-row');
   rowAll.append(scopeAll);
-  rowAll.append(el('span', '', '全库'));
+  rowAll.append(el('span', '', getString('panel-form-scope-all')));
   const rowColl = el('div', 'radio-row');
   rowColl.append(scopeColl);
-  rowColl.append(el('span', '', '指定集合'));
+  rowColl.append(el('span', '', getString('panel-form-scope-collections')));
   scopeField.append(rowAll, rowColl);
 
   // 集合多选列表（仅指定集合时显示）
@@ -808,7 +891,7 @@ function renderForm(wrap: HTMLElement): void {
   includeSub.type = 'checkbox';
   includeSub.checked = currentScope.includeSubcollections;
   includeSubRow.append(includeSub);
-  includeSubRow.append(el('span', '', '包含子集合'));
+  includeSubRow.append(el('span', '', getString('panel-form-include-sub')));
   collBox.append(collList, collHint, includeSubRow);
   collBox.hidden = currentScope.type !== 'collections';
 
@@ -818,11 +901,11 @@ function renderForm(wrap: HTMLElement): void {
       collCache = loadCollectionOptions();
     }
     if (!collCache.ok) {
-      collHint.textContent = '取不到集合列表（Zotero.Collections API 不可用），请改用全库范围。';
+      collHint.textContent = getString('panel-form-coll-unavailable');
       return;
     }
     if (!collCache.options.length) {
-      collHint.textContent = '文库中没有集合，请改用全库范围。';
+      collHint.textContent = getString('panel-form-coll-empty');
       return;
     }
     collHint.textContent = '';
@@ -858,7 +941,7 @@ function renderForm(wrap: HTMLElement): void {
 
   // —— 输入材料 ——
   const matField = el('div', 'field');
-  matField.append(formLabel('输入材料'));
+  matField.append(formLabel(getString('panel-form-materials')));
   const curMat: SkillMaterials = editing?.materials ?? {
     includeMetadata: true,
     includeAbstract: false,
@@ -875,11 +958,11 @@ function renderForm(wrap: HTMLElement): void {
   matNotes.type = 'checkbox';
   matNotes.checked = curMat.includeNotes;
   const rowMeta = el('div', 'check-row');
-  rowMeta.append(matMeta, el('span', '', '文献基本信息（标题/作者/年份/条目 key）'));
+  rowMeta.append(matMeta, el('span', '', getString('panel-form-mat-metadata')));
   const rowAbs = el('div', 'check-row');
-  rowAbs.append(matAbs, el('span', '', '摘要'));
+  rowAbs.append(matAbs, el('span', '', getString('panel-mat-abstract')));
   const rowNotes = el('div', 'check-row');
-  rowNotes.append(matNotes, el('span', '', '已有笔记（标题 + 文本）'));
+  rowNotes.append(matNotes, el('span', '', getString('panel-form-mat-notes')));
   const pdfEarliest = el('input');
   pdfEarliest.type = 'radio';
   pdfEarliest.name = 'pdf-mode';
@@ -894,15 +977,15 @@ function renderForm(wrap: HTMLElement): void {
     pdfEarliest.checked = true;
   }
   const rowPdf1 = el('div', 'radio-row');
-  rowPdf1.append(pdfEarliest, el('span', '', 'PDF：目标条目最早加入的本地 PDF 路径'));
+  rowPdf1.append(pdfEarliest, el('span', '', getString('panel-form-mat-pdf-earliest')));
   const rowPdf2 = el('div', 'radio-row');
-  rowPdf2.append(pdfNone, el('span', '', 'PDF：不提供'));
+  rowPdf2.append(pdfNone, el('span', '', getString('panel-form-mat-pdf-none')));
   matField.append(rowMeta, rowAbs, rowNotes, rowPdf1, rowPdf2);
   wrap.append(matField);
 
   // —— 交付物 ——
   const delField = el('div', 'field');
-  delField.append(formLabel('交付物'));
+  delField.append(formLabel(getString('panel-form-deliverable')));
   const curDel: SkillDeliverable = editing?.deliverable ?? { type: 'note' };
   const delTypeCur = curDel.type === 'file' || curDel.type === 'markdown' ? curDel.type : 'note';
   const delNote = el('input');
@@ -925,11 +1008,11 @@ function renderForm(wrap: HTMLElement): void {
     delNote.checked = true;
   }
   const rowDelNote = el('div', 'radio-row');
-  rowDelNote.append(delNote, el('span', '', '内建笔记（HTML 写成条目笔记）'));
+  rowDelNote.append(delNote, el('span', '', getString('panel-form-del-note')));
   const rowDelFile = el('div', 'radio-row');
-  rowDelFile.append(delFile, el('span', '', '文件（PDF 等，存入受控目录）'));
+  rowDelFile.append(delFile, el('span', '', getString('panel-form-del-file')));
   const rowDelMd = el('div', 'radio-row');
-  rowDelMd.append(delMd, el('span', '', 'Markdown 文本'));
+  rowDelMd.append(delMd, el('span', '', getString('panel-form-del-markdown')));
   delField.append(rowDelNote, rowDelFile, rowDelMd);
 
   // 文件交付物选项
@@ -939,17 +1022,17 @@ function renderForm(wrap: HTMLElement): void {
   attachFile.type = 'checkbox';
   attachFile.checked = curDel.type === 'file' && !!curDel.attachToItem;
   const rowAttachFile = el('div', 'check-row');
-  rowAttachFile.append(attachFile, el('span', '', '完成后自动挂成条目附件'));
+  rowAttachFile.append(attachFile, el('span', '', getString('panel-form-attach-file')));
   const extInput = el('input');
   extInput.type = 'text';
-  extInput.placeholder = '允许的扩展名，逗号分隔（留空用默认：pdf、md、txt…）';
+  extInput.placeholder = getString('panel-form-ext-ph');
   extInput.value =
     curDel.type === 'file' && curDel.allowedExtensions
       ? curDel.allowedExtensions.join(', ')
       : '';
   const maxMBInput = el('input');
   maxMBInput.type = 'text';
-  maxMBInput.placeholder = '单文件上限 MB（留空默认 50，最大 200）';
+  maxMBInput.placeholder = getString('panel-form-maxmb-ph');
   maxMBInput.value =
     curDel.type === 'file' && curDel.maxBytes
       ? String(Math.round((curDel.maxBytes / 1048576) * 10) / 10)
@@ -975,14 +1058,14 @@ function renderForm(wrap: HTMLElement): void {
     mdTargetNote.checked = true;
   }
   const rowMdNote = el('div', 'radio-row');
-  rowMdNote.append(mdTargetNote, el('span', '', '转写成内建笔记'));
+  rowMdNote.append(mdTargetNote, el('span', '', getString('panel-form-md-target-note')));
   const rowMdFile = el('div', 'radio-row');
-  rowMdFile.append(mdTargetFile, el('span', '', '存为 .md 文件'));
+  rowMdFile.append(mdTargetFile, el('span', '', getString('panel-form-md-target-file')));
   const attachMd = el('input');
   attachMd.type = 'checkbox';
   attachMd.checked = curDel.type === 'markdown' && !!curDel.attachToItem;
   const rowAttachMd = el('div', 'check-row');
-  rowAttachMd.append(attachMd, el('span', '', '存文件时自动挂成条目附件'));
+  rowAttachMd.append(attachMd, el('span', '', getString('panel-form-attach-md')));
   mdOpts.append(rowMdNote, rowMdFile, rowAttachMd);
 
   const syncDelOpts = (): void => {
@@ -1005,17 +1088,17 @@ function renderForm(wrap: HTMLElement): void {
   const btnRow = el('div', 'ops');
   btnRow.append(
     opBtn(
-      '保存',
+      getString('panel-action-save'),
       async () => {
         clearError();
         const name = nameInput.value.trim();
         if (!name) {
-          showError('请填写技能组名称。');
+          showError(getString('panel-form-err-name-required'));
           return;
         }
         const instruction = instrInput.value.trim();
         if (!instruction) {
-          showError('请填写任务指令。');
+          showError(getString('panel-form-err-instruction-required'));
           return;
         }
         const scopeType = (
@@ -1031,7 +1114,7 @@ function renderForm(wrap: HTMLElement): void {
             )
             .map((i) => i.value);
           if (!checked.length) {
-            showError('指定集合范围至少选择一个集合。');
+            showError(getString('panel-form-err-scope-empty'));
             return;
           }
           scope = {
@@ -1075,7 +1158,7 @@ function renderForm(wrap: HTMLElement): void {
           if (mbText) {
             const mb = Number(mbText);
             if (!Number.isFinite(mb) || mb <= 0) {
-              showError('单文件上限须为正数（单位 MB）。');
+              showError(getString('panel-form-err-maxmb'));
               return;
             }
             d.maxBytes = Math.floor(mb * 1048576);
@@ -1127,10 +1210,10 @@ function renderForm(wrap: HTMLElement): void {
         closeForm();
         renderSkills();
       },
-      { cls: 'primary', icon: 'check', title: '保存技能组' }
+      { cls: 'primary', icon: 'check', title: getString('panel-action-save-sg-title') }
     )
   );
-  btnRow.append(opBtn('取消', () => closeForm(), { icon: 'x', title: '关闭表单，不保存' }));
+  btnRow.append(opBtn(getString('panel-action-cancel'), () => closeForm(), { icon: 'x', title: getString('panel-action-cancel-form-title') }));
   wrap.append(btnRow);
 }
 
@@ -1144,7 +1227,7 @@ async function setSkillEnabled(sg: SkillGroup, enabled: boolean): Promise<void> 
     await api.skillGroups.setEnabled(sg.id, enabled);
     await refreshTab(activeTab);
   } catch (e) {
-    showError(`${enabled ? '启用' : '停用'}失败：${errMsg(e)}`);
+    showError(getString(enabled ? 'panel-err-enable-failed' : 'panel-err-disable-failed', { error: errMsg(e) }));
   }
 }
 
@@ -1158,7 +1241,7 @@ async function copySkillGroup(id: string): Promise<void> {
     await api.skillGroups.copy(id);
     await refreshTab(activeTab);
   } catch (e) {
-    showError(`复制失败：${errMsg(e)}`);
+    showError(getString('panel-err-copy-sg-failed', { error: errMsg(e) }));
   }
 }
 
@@ -1168,14 +1251,14 @@ async function archiveSkillGroup(id: string): Promise<void> {
     return;
   }
   clearError();
-  if (!window.confirm('确定归档该技能组吗？归档后不再生成新任务，历史任务与笔记保留。')) {
+  if (!window.confirm(getString('panel-confirm-archive'))) {
     return;
   }
   try {
     await api.skillGroups.archive(id);
     await refreshTab(activeTab);
   } catch (e) {
-    showError(`归档失败：${errMsg(e)}`);
+    showError(getString('panel-err-archive-failed', { error: errMsg(e) }));
   }
 }
 
@@ -1185,14 +1268,14 @@ async function deleteSkillGroup(id: string): Promise<void> {
     return;
   }
   clearError();
-  if (!window.confirm('确定永久删除该技能组吗？此操作不可恢复，历史任务保留但不再关联。')) {
+  if (!window.confirm(getString('panel-confirm-delete'))) {
     return;
   }
   try {
     await api.skillGroups.remove(id);
     await refreshTab(activeTab);
   } catch (e) {
-    showError(`删除失败：${errMsg(e)}`);
+    showError(getString('panel-err-delete-failed', { error: errMsg(e) }));
   }
 }
 
@@ -1222,9 +1305,9 @@ function renderTasks(): void {
     root.append(
       emptyState(
         'package',
-        '还没有技能组',
-        '先创建技能组，扫描后生成的任务会在这里按状态分组展示。',
-        { label: '去技能组', icon: 'layers', onClick: () => switchTab('skills') }
+        getString('panel-empty-no-sg-title'),
+        getString('panel-empty-no-sg-tasks-desc'),
+        { label: getString('panel-action-goto-sg'), icon: 'layers', onClick: () => switchTab('skills') }
       )
     );
     return;
@@ -1236,12 +1319,12 @@ function renderTasks(): void {
   searchBox.append(iconEl('search'));
   const searchInput = el('input');
   searchInput.type = 'text';
-  searchInput.placeholder = '按条目 key 搜索任务…';
-  searchInput.setAttribute('aria-label', '按条目 key 搜索任务');
+  searchInput.placeholder = getString('panel-task-search-ph');
+  searchInput.setAttribute('aria-label', getString('panel-task-search-aria'));
   searchInput.value = taskSearch;
   const clearBtn = el('button', 'search-clear');
   clearBtn.innerHTML = iconSVG('x', 'ic ic-sm');
-  clearBtn.title = '清除搜索';
+  clearBtn.title = getString('panel-task-search-clear-title');
   clearBtn.hidden = !taskSearch;
   clearBtn.addEventListener('click', () => {
     taskSearch = '';
@@ -1264,8 +1347,8 @@ function renderTasks(): void {
 
   const filterSel = el('select', 'filter-select') as HTMLSelectElement;
   filterSel.id = 'task-status-filter';
-  filterSel.setAttribute('aria-label', '按任务状态筛选');
-  filterSel.append(new Option('全部状态', 'all'));
+  filterSel.setAttribute('aria-label', getString('panel-task-filter-aria'));
+  filterSel.append(new Option(getString('panel-task-filter-all'), 'all'));
   for (const st of [...ACTIVE_STATUS_ORDER, 'done' as TaskStatus]) {
     filterSel.append(new Option(STATUS_META[st].label, st));
   }
@@ -1287,25 +1370,25 @@ function renderTasks(): void {
   batchBar.append(el('span', 'cnt', ''));
   const bbOps = el('div', 'ops');
   bbOps.append(
-    opBtn('批量重试', () => batchRetry(), {
+    opBtn(getString('panel-action-batch-retry'), () => batchRetry(), {
       id: 'batch-retry-btn',
       icon: 'rotate-ccw',
-      title: '重试选中的失败任务（仅失败状态可重试）',
+      title: getString('panel-action-batch-retry-title'),
     })
   );
   bbOps.append(
-    opBtn('批量取消', () => batchCancel(), {
+    opBtn(getString('panel-action-batch-cancel'), () => batchCancel(), {
       id: 'batch-cancel-btn',
       cls: 'danger',
       icon: 'x',
-      title: '取消选中的未完成任务',
+      title: getString('panel-action-batch-cancel-title'),
     })
   );
   bbOps.append(
-    opBtn('清除选择', () => {
+    opBtn(getString('panel-action-clear-selection'), () => {
       selectedTasks.clear();
       renderTaskList();
-    }, { icon: 'x', title: '清除已选任务', secondary: true })
+    }, { icon: 'x', title: getString('panel-action-clear-selection-title'), secondary: true })
   );
   batchBar.append(bbOps);
   root.append(batchBar);
@@ -1369,14 +1452,14 @@ function renderTaskList(): void {
 
   const info = document.getElementById('task-filter-info');
   if (info) {
-    info.textContent = filterActive ? `显示 ${matched} / ${total} 条` : '';
+    info.textContent = filterActive ? getString('panel-task-showing', { matched, total }) : '';
   }
 
   if (filterActive && shownGroups === 0) {
     // 筛选无结果：带清除筛选的空状态
     wrap.append(
-      emptyState('search', '没有匹配的任务', '尝试调整关键词或更换状态筛选。', {
-        label: '清除筛选',
+      emptyState('search', getString('panel-empty-no-match-title'), getString('panel-empty-no-match-desc'), {
+        label: getString('panel-action-clear-filter'),
         icon: 'x',
         onClick: () => {
           taskSearch = '';
@@ -1391,9 +1474,9 @@ function renderTaskList(): void {
     wrap.append(
       emptyState(
         'inbox',
-        '还没有任务',
-        '技能组已就绪。点击「扫描」为符合范围的文献生成任务，任务会在这里按状态分组展示。',
-        { label: '去技能组', icon: 'search', onClick: () => switchTab('skills') }
+        getString('panel-empty-no-tasks-title'),
+        getString('panel-empty-no-tasks-desc'),
+        { label: getString('panel-action-goto-sg'), icon: 'search', onClick: () => switchTab('skills') }
       )
     );
   }
@@ -1421,20 +1504,20 @@ function taskGroupSection(sg: SkillGroup, filtered?: Task[]): HTMLElement {
   const countEl = el('span', 'count', '');
   const strongDone = el('strong', '', String(done));
   const strongUndone = el('strong', '', String(undone));
-  countEl.append('完成 ', strongDone, ' · 未完成 ', strongUndone);
+  countEl.append(getString('panel-task-count-done') + ' ', strongDone, ' · ' + getString('panel-task-count-undone') + ' ', strongUndone);
   head.append(countEl);
   sec.append(head);
 
   const ops = el('div', 'ops');
   ops.append(
-    opBtn(sg.enabled ? '暂停' : '恢复', () => setSkillEnabled(sg, !sg.enabled), {
+    opBtn(sg.enabled ? getString('panel-action-pause') : getString('panel-action-resume'), () => setSkillEnabled(sg, !sg.enabled), {
       icon: sg.enabled ? 'pause' : 'play',
-      title: sg.enabled ? '暂停领取：不再生成新任务并暂停外部领取' : '恢复领取',
+      title: sg.enabled ? getString('panel-action-pause-title') : getString('panel-action-resume-title'),
     })
   );
-  const rescanBtn = opBtn('扫描', () => rescan(sg.id), {
+  const rescanBtn = opBtn(getString('panel-action-scan'), () => rescan(sg.id), {
     icon: 'search',
-    title: '重新扫描该技能组范围，生成新任务',
+    title: getString('panel-action-scan-title'),
   });
   rescanBtn.id = `rescan-btn-${sg.id}`;
   ops.append(rescanBtn);
@@ -1474,7 +1557,7 @@ function taskGroupSection(sg: SkillGroup, filtered?: Task[]): HTMLElement {
     sum.append(chev);
     det.append(sum);
     if (!items.length) {
-      det.append(el('div', 'task-none', '暂无'));
+      det.append(el('div', 'task-none', getString('panel-task-none')));
     }
     for (const t of items) {
       det.append(taskItem(t));
@@ -1490,13 +1573,13 @@ function taskGroupSection(sg: SkillGroup, filtered?: Task[]): HTMLElement {
     doneIc.style.color = 'var(--ok)';
     doneIc.innerHTML = iconSVG('check-circle', 'ic ic-sm');
     doneSum.append(doneIc);
-    doneSum.append(document.createTextNode(`已完成（${dones.length}）`));
+    doneSum.append(document.createTextNode(getString('panel-task-done-summary', { n: dones.length })));
     const doneChev = el('span', 'chev');
     doneChev.innerHTML = iconSVG('chevron-down', 'ic ic-sm');
     doneSum.append(doneChev);
     doneDet.append(doneSum);
     if (!dones.length) {
-      doneDet.append(el('div', 'task-none', '暂无'));
+      doneDet.append(el('div', 'task-none', getString('panel-task-none')));
     }
     for (const t of dones) {
       doneDet.append(taskItem(t));
@@ -1525,9 +1608,9 @@ function taskItem(t: Task): HTMLElement {
   // 展开/收起详情
   const expBtn = el('button', 'exp-btn');
   expBtn.innerHTML = iconSVG('chevron-down', 'ic ic-sm');
-  expBtn.title = expanded ? '收起任务详情' : '展开任务详情';
+  expBtn.title = getString(expanded ? 'panel-task-collapse' : 'panel-task-expand');
   expBtn.setAttribute('aria-expanded', String(expanded));
-  expBtn.setAttribute('aria-label', expanded ? '收起任务详情' : '展开任务详情');
+  expBtn.setAttribute('aria-label', getString(expanded ? 'panel-task-collapse' : 'panel-task-expand'));
   expBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     toggleTaskDetail(t.id);
@@ -1539,8 +1622,8 @@ function taskItem(t: Task): HTMLElement {
     const cb = el('input', 'task-check');
     cb.type = 'checkbox';
     cb.checked = selectedTasks.has(t.id);
-    cb.title = '选中该任务以批量操作';
-    cb.setAttribute('aria-label', `选中任务 ${t.itemKey}`);
+    cb.title = getString('panel-task-select-title');
+    cb.setAttribute('aria-label', getString('panel-task-select-aria', { key: t.itemKey }));
     cb.addEventListener('click', (e) => e.stopPropagation());
     cb.addEventListener('change', () => {
       if (cb.checked) {
@@ -1557,17 +1640,17 @@ function taskItem(t: Task): HTMLElement {
   const line1 = el('div');
   line1.append(el('span', 'mono', t.itemKey));
   line1.append(document.createTextNode('　'));
-  line1.append(el('span', 'muted', '创建 '));
+  line1.append(el('span', 'muted', getString('panel-task-created-label') + ' '));
   line1.append(relTime(t.createdAt));
-  line1.append(el('span', 'muted', ' · 领取 '));
+  line1.append(el('span', 'muted', ' · ' + getString('panel-task-claimed-label') + ' '));
   line1.append(relTime(t.claimedAt));
-  line1.append(el('span', 'muted', ' · 完成 '));
+  line1.append(el('span', 'muted', ' · ' + getString('panel-task-completed-label') + ' '));
   line1.append(relTime(t.completedAt));
   info.append(line1);
   if (t.lastError) {
     const errLine = el('div', 'err-inline');
     errLine.append(iconEl('alert-circle', 'ic ic-sm'));
-    errLine.append(document.createTextNode(`失败原因：${t.lastError}`));
+    errLine.append(document.createTextNode(getString('panel-task-fail-reason', { error: t.lastError })));
     info.append(errLine);
   }
   row.append(info);
@@ -1575,19 +1658,19 @@ function taskItem(t: Task): HTMLElement {
   const ops = el('div', 'ops');
   if (t.status === 'failed') {
     ops.append(
-      opBtn('重试', () => retryTask(t.id), {
+      opBtn(getString('panel-action-retry'), () => retryTask(t.id), {
         icon: 'rotate-ccw',
-        title: '将任务放回待领取队列',
+        title: getString('panel-action-retry-title'),
         secondary: true,
       })
     );
   }
   if (t.status !== 'done' && t.status !== 'cancelled') {
     ops.append(
-      opBtn('取消', () => cancelTask(t.id), {
+      opBtn(getString('panel-action-cancel'), () => cancelTask(t.id), {
         cls: 'danger',
         icon: 'x',
-        title: '取消该任务，不再领取',
+        title: getString('panel-action-cancel-task-title'),
         secondary: true,
       })
     );
@@ -1626,20 +1709,20 @@ function taskDetail(t: Task): HTMLElement {
   const sg = api?.skillGroups.get(t.skillGroupId);
 
   const grid = el('div', 'detail-grid');
-  grid.append(detailKV('技能组', sg?.name ?? '（技能组已删除）'));
-  grid.append(detailKV('技能组版本', `v${t.skillGroupVersion}`));
-  grid.append(detailKV('尝试次数', String(t.attempts)));
+  grid.append(detailKV(getString('panel-detail-sg'), sg?.name ?? getString('panel-detail-sg-deleted')));
+  grid.append(detailKV(getString('panel-detail-sg-version'), `v${t.skillGroupVersion}`));
+  grid.append(detailKV(getString('panel-detail-attempts'), String(t.attempts)));
   d.append(grid);
 
   // 领取时的指令快照
   const insSec = el('div', 'd-sec');
-  insSec.append(el('h4', '', '领取时指令快照'));
-  insSec.append(el('div', 'instruction', t.instructionSnapshot || '（空）'));
+  insSec.append(el('h4', '', getString('panel-detail-instruction')));
+  insSec.append(el('div', 'instruction', t.instructionSnapshot || getString('panel-detail-instruction-empty')));
   d.append(insSec);
 
   // 材料清单（按技能组当前 materials 配置逐项列出）
   const matSec = el('div', 'd-sec');
-  matSec.append(el('h4', '', '材料清单（按技能组当前配置）'));
+  matSec.append(el('h4', '', getString('panel-detail-materials')));
   if (sg) {
     const items = materialItems(sg.materials);
     const ul = el('ul', 'd-list');
@@ -1648,43 +1731,43 @@ function taskDetail(t: Task): HTMLElement {
         ul.append(el('li', '', s));
       }
     } else {
-      ul.append(el('li', '', '未配置输入材料'));
+      ul.append(el('li', '', getString('panel-detail-no-materials')));
     }
     matSec.append(ul);
   } else {
-    matSec.append(el('div', 'muted', '技能组信息不可用'));
+    matSec.append(el('div', 'muted', getString('panel-detail-sg-unavailable')));
   }
   d.append(matSec);
 
   // 交付物：类型 + 交付结果（笔记 key / 文件名 / 附件 key）
   const delSec = el('div', 'd-sec');
-  delSec.append(el('h4', '', '交付物'));
+  delSec.append(el('h4', '', getString('panel-detail-deliverable')));
   const delGrid = el('div', 'detail-grid');
-  delGrid.append(detailKV('类型', deliverableLabel(sg?.deliverable)));
+  delGrid.append(detailKV(getString('panel-detail-type'), deliverableLabel(sg?.deliverable)));
   if (t.status === 'done') {
     const dtype = t.deliverableType ?? (t.noteKey ? 'note' : null);
     if (dtype === 'file' || (dtype === 'markdown' && !t.noteKey)) {
-      delGrid.append(detailKV('文件', t.deliverableRef ?? '—', true));
+      delGrid.append(detailKV(getString('panel-detail-file'), t.deliverableRef ?? '—', true));
     } else if (t.noteKey) {
-      delGrid.append(detailKV('笔记 key', t.noteKey, true));
+      delGrid.append(detailKV(getString('panel-detail-note-key'), t.noteKey, true));
     }
     if (t.attachmentKey) {
-      delGrid.append(detailKV('附件 key', t.attachmentKey, true));
+      delGrid.append(detailKV(getString('panel-detail-attachment-key'), t.attachmentKey, true));
     }
-    delGrid.append(detailKV('写入状态', '已交付'));
+    delGrid.append(detailKV(getString('panel-detail-write-status'), getString('panel-detail-delivered')));
   } else {
-    delGrid.append(detailKV('写入状态', '尚未交付'));
+    delGrid.append(detailKV(getString('panel-detail-write-status'), getString('panel-detail-not-delivered')));
   }
   delSec.append(delGrid);
   d.append(delSec);
 
   // 时间线：创建 → 领取 → 完成
   const tlSec = el('div', 'd-sec');
-  tlSec.append(el('h4', '', '时间线'));
+  tlSec.append(el('h4', '', getString('panel-detail-timeline')));
   const tl = el('ul', 'timeline');
-  tl.append(timelineStep('创建', t.createdAt));
-  tl.append(timelineStep('领取', t.claimedAt));
-  tl.append(timelineStep('完成', t.completedAt));
+  tl.append(timelineStep(getString('panel-task-created-label'), t.createdAt));
+  tl.append(timelineStep(getString('panel-task-claimed-label'), t.claimedAt));
+  tl.append(timelineStep(getString('panel-task-completed-label'), t.completedAt));
   tlSec.append(tl);
   d.append(tlSec);
 
@@ -1715,16 +1798,16 @@ function timelineStep(label: string, ts: number | null | undefined): HTMLElement
 function materialItems(m: SkillMaterials): string[] {
   const parts: string[] = [];
   if (m.includeMetadata) {
-    parts.push('文献基本信息（标题/作者/年份/条目 key）');
+    parts.push(getString('panel-form-mat-metadata'));
   }
   if (m.includeAbstract) {
-    parts.push('摘要');
+    parts.push(getString('panel-mat-abstract'));
   }
   if (m.includeNotes) {
-    parts.push('已有笔记（标题 + 文本）');
+    parts.push(getString('panel-form-mat-notes'));
   }
   if (m.pdf === 'earliest') {
-    parts.push('最早加入的本地 PDF 路径');
+    parts.push(getString('panel-mat-detail-pdf'));
   }
   return parts;
 }
@@ -1739,7 +1822,7 @@ function updateBatchBar(): void {
   bar.hidden = n === 0;
   const cnt = bar.querySelector('.cnt');
   if (cnt) {
-    cnt.textContent = `已选 ${n} 项`;
+    cnt.textContent = getString('panel-batch-selected', { n });
   }
   // 批量重试仅当选中包含失败任务时可用
   let failedCount = 0;
@@ -1752,7 +1835,7 @@ function updateBatchBar(): void {
   if (retryBtn) {
     retryBtn.disabled = failedCount === 0;
     retryBtn.title =
-      failedCount === 0 ? '选中的任务中没有失败待重试的任务' : `重试选中的 ${failedCount} 条失败任务`;
+      failedCount === 0 ? getString('panel-batch-retry-none-title') : getString('panel-batch-retry-title-n', { n: failedCount });
   }
 }
 
@@ -1770,12 +1853,12 @@ async function batchRetry(): Promise<void> {
     }
   }
   if (!targets.length) {
-    showError('选中的任务中没有失败待重试的任务。');
+    showError(getString('panel-batch-retry-none-err'));
     return;
   }
   if (
     !window.confirm(
-      `确定重试选中的 ${targets.length} 条失败任务吗？（共选中 ${selectedTasks.size} 项）\n重试后任务将回到待领取队列。`
+      getString('panel-confirm-batch-retry', { n: targets.length, total: selectedTasks.size })
     )
   ) {
     return;
@@ -1794,7 +1877,15 @@ async function batchRetry(): Promise<void> {
   await refreshTab('tasks');
   showBatchResult(
     errs.length === 0,
-    `批量重试完成：成功 ${ok} 条${errs.length ? `，失败 ${errs.length} 条（${errs.join('；')}）` : ''}。`
+    getString('panel-batch-retry-done', {
+      ok,
+      failPart: errs.length
+        ? getString('panel-batch-fail-part', {
+            n: errs.length,
+            errs: errs.join(getString('panel-err-join-sep')),
+          })
+        : '',
+    })
   );
 }
 
@@ -1812,12 +1903,12 @@ async function batchCancel(): Promise<void> {
     }
   }
   if (!targets.length) {
-    showError('选中的任务中没有可取消的未完成任务。');
+    showError(getString('panel-batch-cancel-none-err'));
     return;
   }
   if (
     !window.confirm(
-      `确定取消选中的 ${targets.length} 条未完成任务吗？\n取消后任务不再被领取，已生成的数据保留。`
+      getString('panel-confirm-batch-cancel', { n: targets.length })
     )
   ) {
     return;
@@ -1836,7 +1927,15 @@ async function batchCancel(): Promise<void> {
   await refreshTab('tasks');
   showBatchResult(
     errs.length === 0,
-    `批量取消完成：成功 ${ok} 条${errs.length ? `，失败 ${errs.length} 条（${errs.join('；')}）` : ''}。`
+    getString('panel-batch-cancel-done', {
+      ok,
+      failPart: errs.length
+        ? getString('panel-batch-fail-part', {
+            n: errs.length,
+            errs: errs.join(getString('panel-err-join-sep')),
+          })
+        : '',
+    })
   );
 }
 
@@ -1866,7 +1965,7 @@ async function retryTask(id: string): Promise<void> {
     await api.tasks.retry(id);
     await refreshTab('tasks');
   } catch (e) {
-    showError(`重试失败：${errMsg(e)}`);
+    showError(getString('panel-err-retry-failed', { error: errMsg(e) }));
   }
 }
 
@@ -1876,14 +1975,14 @@ async function cancelTask(id: string): Promise<void> {
     return;
   }
   clearError();
-  if (!window.confirm('确定取消该任务吗？取消后不再领取，已生成的数据保留。')) {
+  if (!window.confirm(getString('panel-confirm-cancel-task'))) {
     return;
   }
   try {
     await api.tasks.cancel(id);
     await refreshTab('tasks');
   } catch (e) {
-    showError(`取消失败：${errMsg(e)}`);
+    showError(getString('panel-err-cancel-failed', { error: errMsg(e) }));
   }
 }
 
@@ -1915,17 +2014,22 @@ async function rescan(skillGroupId: string): Promise<void> {
   try {
     const result = await api.generator.scanSkillGroup(skillGroupId, {
       onProgress: (done, total) => {
-        setProg(done, total, `扫描中… ${done}/${total}`);
+        setProg(done, total, getString('panel-scan-progress', { done, total }));
       },
     });
     const summary =
-      `扫描完成：已扫描 ${result.scanned}，新建 ${result.created}，` +
-      `跳过 ${result.skipped}，等待材料 ${result.waitingMaterial}，转为待领取 ${result.promoted}`;
+      getString('panel-scan-done', {
+        scanned: result.scanned,
+        created: result.created,
+        skipped: result.skipped,
+        waiting: result.waitingMaterial,
+        promoted: result.promoted,
+      });
     await refreshTab('tasks');
     // refreshTab 重建了 DOM，重新定位进度元素以保留结果摘要
     setProg(1, 1, summary);
   } catch (e) {
-    showError(`扫描失败：${errMsg(e)}`);
+    showError(getString('panel-err-scan-failed', { error: errMsg(e) }));
   } finally {
     scanBusy = null;
     const freshBtn = document.getElementById(`rescan-btn-${skillGroupId}`) as HTMLButtonElement | null;
@@ -1966,12 +2070,12 @@ function bindQuickActions(): void {
   $<HTMLButtonElement>('qa-scan-all').addEventListener('click', () => {
     qaMenu.hidden = true;
     qaBtn.setAttribute('aria-expanded', 'false');
-    void scanAllGroups().catch((e: unknown) => showError(`全部扫描失败：${errMsg(e)}`));
+    void scanAllGroups().catch((e: unknown) => showError(getString('panel-err-scan-all-failed', { error: errMsg(e) })));
   });
   $<HTMLButtonElement>('qa-pause-all').addEventListener('click', () => {
     qaMenu.hidden = true;
     qaBtn.setAttribute('aria-expanded', 'false');
-    void togglePauseAll().catch((e: unknown) => showError(`操作失败：${errMsg(e)}`));
+    void togglePauseAll().catch((e: unknown) => showError(getString('panel-err-op-failed', { error: errMsg(e) })));
   });
   $<HTMLButtonElement>('global-close').addEventListener('click', () => {
     $<HTMLDivElement>('global-scan').hidden = true;
@@ -1986,10 +2090,10 @@ function refreshQuickMenu(): void {
   const groups = api.skillGroups.list(true).filter((sg) => !sg.archived);
   const anyEnabled = groups.some((sg) => sg.enabled);
   const item = $<HTMLButtonElement>('qa-pause-all');
-  item.innerHTML = `${iconSVG(anyEnabled ? 'pause' : 'play', 'ic')}<span>${anyEnabled ? '暂停全部领取' : '恢复全部领取'}</span>`;
-  item.title = anyEnabled
-    ? '停用全部未归档技能组：不再生成新任务、外部 AI 无法领取'
-    : '恢复全部未归档技能组的领取';
+  item.innerHTML = `${iconSVG(anyEnabled ? 'pause' : 'play', 'ic')}<span>${getString(anyEnabled ? 'panel-action-pause-all' : 'panel-action-resume-all')}</span>`;
+  item.title = getString(
+    anyEnabled ? 'panel-action-pause-all-title' : 'panel-action-resume-all-title'
+  );
 }
 
 /** 全部技能组重新扫描（调 generator.scanAllEnabled；语义与单组"扫描"一致） */
@@ -2004,12 +2108,12 @@ async function scanAllGroups(): Promise<void> {
   const text = $<HTMLSpanElement>('global-text');
   bar.hidden = false;
   fill.style.width = '0%';
-  text.textContent = '全部扫描中…';
+  text.textContent = getString('panel-scan-all-progress');
   try {
     const results = await api.generator.scanAllEnabled({
       onProgress: (done, total) => {
         fill.style.width = total > 0 ? `${Math.round((done / total) * 100)}%` : '0%';
-        text.textContent = `全部扫描中… ${done}/${total}`;
+        text.textContent = getString('panel-scan-all-progress-n', { done, total });
       },
     });
     const agg = results.reduce(
@@ -2024,12 +2128,18 @@ async function scanAllGroups(): Promise<void> {
     );
     fill.style.width = '100%';
     text.textContent =
-      `全部扫描完成（${results.length} 个技能组）：已扫描 ${agg.scanned}，` +
-      `新建 ${agg.created}，跳过 ${agg.skipped}，等待材料 ${agg.waitingMaterial}，转为待领取 ${agg.promoted}`;
+      getString('panel-scan-all-done', {
+        n: results.length,
+        scanned: agg.scanned,
+        created: agg.created,
+        skipped: agg.skipped,
+        waiting: agg.waitingMaterial,
+        promoted: agg.promoted,
+      });
     await refreshTab(activeTab);
   } catch (e) {
     bar.hidden = true;
-    showError(`全部扫描失败：${errMsg(e)}`);
+    showError(getString('panel-err-scan-all-failed', { error: errMsg(e) }));
   } finally {
     scanAllRunning = false;
   }
@@ -2043,7 +2153,7 @@ async function togglePauseAll(): Promise<void> {
   clearError();
   const groups = api.skillGroups.list(true).filter((sg) => !sg.archived);
   if (!groups.length) {
-    showError('没有可操作的技能组。');
+    showError(getString('panel-err-no-groups'));
     return;
   }
   const anyEnabled = groups.some((sg) => sg.enabled);
@@ -2051,7 +2161,7 @@ async function togglePauseAll(): Promise<void> {
   if (!target) {
     if (
       !window.confirm(
-        `确定暂停全部 ${groups.length} 个技能组的领取吗？\n暂停后不再生成新任务、外部 AI 无法领取，已有任务保留，可随时恢复。`
+        getString('panel-confirm-pause-all', { n: groups.length })
       )
     ) {
       return;
@@ -2065,7 +2175,7 @@ async function togglePauseAll(): Promise<void> {
     }
     await refreshTab(activeTab);
   } catch (e) {
-    showError(`${target ? '恢复' : '暂停'}全部领取失败：${errMsg(e)}`);
+    showError(getString(target ? 'panel-err-resume-all-failed' : 'panel-err-pause-all-failed', { error: errMsg(e) }));
   }
 }
 
@@ -2091,7 +2201,7 @@ function renderMcp(): void {
     port = st.port;
     token = mcp.ensureToken();
   } catch (e) {
-    showError(`读取 MCP 状态失败：${errMsg(e)}`);
+    showError(getString('panel-err-mcp-status-failed', { error: errMsg(e) }));
     return;
   }
 
@@ -2100,73 +2210,73 @@ function renderMcp(): void {
   const sgIcon = el('span', 'sg-ic');
   sgIcon.innerHTML = iconSVG('server', 'ic');
   head.append(sgIcon);
-  head.append(el('h3', '', 'MCP 服务'));
+  head.append(el('h3', '', getString('panel-mcp-title')));
   const stBadge = el('span', `badge ${enabled ? 'ok' : 'muted'}`);
   stBadge.append(iconEl(enabled ? 'zap' : 'power', 'ic ic-sm'));
-  stBadge.append(document.createTextNode(enabled ? '运行中' : '已停止'));
+  stBadge.append(document.createTextNode(getString(enabled ? 'panel-mcp-running' : 'panel-mcp-stopped')));
   head.append(stBadge);
   card.append(head);
 
   // 启用开关
   const toggleRow = el('div', 'mcp-row');
-  toggleRow.append(el('span', 'k', '服务开关'));
+  toggleRow.append(el('span', 'k', getString('panel-mcp-switch')));
   const toggle = el('input');
   toggle.type = 'checkbox';
   toggle.className = 'switch';
   toggle.checked = enabled;
-  toggle.title = enabled ? '停用 MCP 服务' : '启用 MCP 服务';
-  toggle.setAttribute('aria-label', 'MCP 服务开关');
+  toggle.title = getString(enabled ? 'panel-mcp-disable-title' : 'panel-mcp-enable-title');
+  toggle.setAttribute('aria-label', getString('panel-mcp-switch-aria'));
   toggle.addEventListener('change', () => {
     void setMcpEnabled(toggle.checked);
   });
   toggleRow.append(toggle);
-  toggleRow.append(el('span', '', enabled ? '已启用' : '已停用'));
+  toggleRow.append(el('span', '', getString(enabled ? 'panel-mcp-enabled' : 'panel-mcp-disabled')));
   card.append(toggleRow);
 
   // 服务端点（一键复制）
   const urlRow = el('div', 'mcp-row');
-  urlRow.append(el('span', 'k', '服务端点'));
+  urlRow.append(el('span', 'k', getString('panel-mcp-endpoint')));
   if (port !== null) {
     const url = `http://127.0.0.1:${port}${path}`;
     const urlBox = el('div', 'url-box', url);
-    urlBox.title = 'MCP HTTP 端点（仅本机可访问）';
+    urlBox.title = getString('panel-mcp-endpoint-title');
     urlRow.append(urlBox);
     urlRow.append(
-      opBtn('复制', (b) => copyText(url, b), { icon: 'copy', title: '复制服务端点 URL' })
+      opBtn(getString('panel-action-copy'), (b) => copyText(url, b), { icon: 'copy', title: getString('panel-mcp-copy-endpoint-title') })
     );
   } else {
-    urlRow.append(el('span', 'muted', '端口未知（Zotero 服务端口未检出）'));
+    urlRow.append(el('span', 'muted', getString('panel-mcp-port-unknown')));
   }
   card.append(urlRow);
 
   // token 显示 + 复制 + 重新生成
   const tokenRow = el('div', 'mcp-row');
-  tokenRow.append(el('span', 'k', '访问 token'));
+  tokenRow.append(el('span', 'k', getString('panel-mcp-token')));
   const tokenBox = el('div', 'token-box', token);
-  tokenBox.title = '领取与提交接口需携带该 token（Bearer）';
+  tokenBox.title = getString('panel-mcp-token-title');
   tokenRow.append(tokenBox);
-  const tokenCopyBtn = opBtn('复制', (b) => copyText(token, b), {
+  const tokenCopyBtn = opBtn(getString('panel-action-copy'), (b) => copyText(token, b), {
     icon: 'copy',
-    title: '复制访问 token',
+    title: getString('panel-mcp-copy-token-title'),
     secondary: true,
   });
   tokenRow.append(tokenCopyBtn);
-  const regenBtn = opBtn('更换', () => regenerateToken(), {
+  const regenBtn = opBtn(getString('panel-action-regen'), () => regenerateToken(), {
     icon: 'key',
-    title: '重新生成访问 token，旧 token 立即失效',
+    title: getString('panel-mcp-regen-title'),
     secondary: true,
   });
   tokenRow.append(regenBtn);
   card.append(tokenRow);
   card.append(
-    el('div', 'hint', '领取与提交接口均需携带该 token；更换后旧 token 立即失效，外部 AI 客户端需要更新配置。')
+    el('div', 'hint', getString('panel-mcp-token-hint'))
   );
 
   // 关闭时的明确提示
   const notice = el('div', 'notice');
   notice.append(iconEl('alert-circle', 'ic'));
   notice.append(
-    document.createTextNode('MCP 服务已停止监听，不再接受外部领取与提交请求。')
+    document.createTextNode(getString('panel-mcp-stopped-notice'))
   );
   notice.id = 'mcp-stopped-notice';
   notice.hidden = enabled;
@@ -2184,8 +2294,8 @@ function auditCard(): HTMLElement {
   const sgIcon = el('span', 'sg-ic');
   sgIcon.innerHTML = iconSVG('activity', 'ic');
   head.append(sgIcon);
-  head.append(el('h3', '', '领取/提交记录'));
-  head.append(el('span', 'count', `最近 ${AUDIT_LIMIT} 条`));
+  head.append(el('h3', '', getString('panel-audit-title')));
+  head.append(el('span', 'count', getString('panel-audit-recent', { n: AUDIT_LIMIT })));
   card.append(head);
 
   interface AuditEvent {
@@ -2210,13 +2320,13 @@ function auditCard(): HTMLElement {
   const recent = events.slice(0, AUDIT_LIMIT);
 
   if (!recent.length) {
-    card.append(el('div', 'muted', '暂无领取/提交记录。'));
+    card.append(el('div', 'muted', getString('panel-audit-empty')));
     return card;
   }
   const KIND_META = {
-    claim: { label: '领取任务', cls: 'accent', icon: 'zap' },
-    done: { label: '提交完成', cls: 'ok', icon: 'check-circle' },
-    fail: { label: '任务失败', cls: 'danger', icon: 'alert-circle' },
+    claim: { label: getString('panel-audit-claim'), cls: 'accent', icon: 'zap' },
+    done: { label: getString('panel-audit-done'), cls: 'ok', icon: 'check-circle' },
+    fail: { label: getString('panel-audit-fail'), cls: 'danger', icon: 'alert-circle' },
   } as const;
   const list = el('div', 'audit-list');
   for (const ev of recent) {
@@ -2231,18 +2341,18 @@ function auditCard(): HTMLElement {
     l1.append(document.createTextNode('　'));
     l1.append(el('span', 'mono', ev.task.itemKey));
     info.append(l1);
-    const sgName = api!.skillGroups.get(ev.task.skillGroupId)?.name ?? '（技能组已删除）';
+    const sgName = api!.skillGroups.get(ev.task.skillGroupId)?.name ?? getString('panel-detail-sg-deleted');
     let sub = sgName;
     if (ev.kind === 'done') {
       const t = ev.task;
       const dtype = t.deliverableType ?? (t.noteKey ? 'note' : null);
       if (dtype === 'file' || (dtype === 'markdown' && !t.noteKey)) {
-        sub += ` · 文件 ${t.deliverableRef ?? ''}`;
+        sub += ` · ${getString('panel-audit-file')} ${t.deliverableRef ?? ''}`;
       } else if (t.noteKey) {
-        sub += ` · 笔记 ${t.noteKey}`;
+        sub += ` · ${getString('panel-audit-note')} ${t.noteKey}`;
       }
       if (t.attachmentKey) {
-        sub += ` · 附件 ${t.attachmentKey}`;
+        sub += ` · ${getString('panel-audit-attachment')} ${t.attachmentKey}`;
       }
     }
     if (ev.kind === 'fail' && ev.task.lastError) {
@@ -2274,7 +2384,7 @@ async function setMcpEnabled(v: boolean): Promise<void> {
       }
     }
   } catch (e) {
-    showError(`切换 MCP 服务失败：${errMsg(e)}`);
+    showError(getString('panel-err-mcp-toggle-failed', { error: errMsg(e) }));
   }
 }
 
@@ -2285,7 +2395,7 @@ async function regenerateToken(): Promise<void> {
   }
   clearError();
   if (
-    !window.confirm('确定重新生成访问 token 吗？旧 token 将立即失效，外部 AI 客户端需要更新配置。')
+    !window.confirm(getString('panel-confirm-regen-token'))
   ) {
     return;
   }
@@ -2293,7 +2403,7 @@ async function regenerateToken(): Promise<void> {
     api.mcp.regenerateToken();
     renderMcp();
   } catch (e) {
-    showError(`重新生成 token 失败：${errMsg(e)}`);
+    showError(getString('panel-err-regen-token-failed', { error: errMsg(e) }));
   }
 }
 

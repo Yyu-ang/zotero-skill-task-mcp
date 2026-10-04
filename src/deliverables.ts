@@ -7,11 +7,12 @@
  * - base64 解码（base64ToBytes）
  * - 提交参数校验（validateSubmitParams：按交付物类型归一化提交）
  * - markdown → 笔记 HTML 的最小安全转换（markdownToNoteHtml）
- * - 面板展示用中文标签（deliverableLabel）
+ * - 面板展示用本地化标签（deliverableLabel，走 getString）
  */
 
 import type { SkillDeliverable } from './types';
 import { LIMITS } from './utils';
+import { getString } from './utils/locale';
 import { getDeliverableMaxBytes } from './prefs';
 
 /** 文件交付物默认扩展名白名单（小写、无点） */
@@ -257,16 +258,23 @@ export function markdownToNoteHtml(md: string): string {
     .join('');
 }
 
-/** 交付物中文标签（面板展示用） */
+/** 交付物本地化标签（面板展示用；走 getString，未初始化语言时回退中文） */
 export function deliverableLabel(d: SkillDeliverable | undefined): string {
   const norm = normalizeDeliverable(d);
   if (norm.type === 'note') {
-    return '内建笔记';
+    return getString('panel-deliverable-note');
   }
   if (norm.type === 'file') {
-    return `文件${norm.attachToItem ? '（自动挂附件）' : ''}`;
+    return (
+      getString('panel-deliverable-file') +
+      (norm.attachToItem ? getString('panel-deliverable-file-attach') : '')
+    );
   }
-  return `Markdown→${norm.target === 'note' ? '内建笔记' : '文件'}`;
+  return getString('panel-deliverable-markdown', {
+    target: getString(
+      norm.target === 'note' ? 'panel-deliverable-note' : 'panel-deliverable-file'
+    ),
+  });
 }
 
 /** 校验后的提交（纯数据，不含 IO） */
