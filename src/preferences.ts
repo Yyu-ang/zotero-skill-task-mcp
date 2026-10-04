@@ -177,8 +177,6 @@ function init(): void {
   const updateTokenRowVisibility = () => {
     const enabled = !!tokenEnabledEl?.checked;
     if (tokenRow) (tokenRow as HTMLElement).hidden = !enabled;
-    const hint = document.querySelector('[data-l10n-id="skill-task-prefs-token-hint"]');
-    // hint 始终显示，无需处理
   };
   if (tokenEnabledEl) {
     try {

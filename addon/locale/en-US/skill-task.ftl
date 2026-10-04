@@ -20,7 +20,7 @@ skill-task-prefs-token-hint = The token is optional; the MCP API needs no auth w
 skill-task-prefs-task-section = Task defaults
 skill-task-prefs-lease = Claim lease (minutes)
 skill-task-prefs-maxfile = Max file deliverable size (MB)
-skill-task-prefs-task-hint = Changes apply immediately, no restart needed; hard cap 200 MB.
+skill-task-prefs-task-hint = Changes apply immediately, no restart needed.
 skill-task-prefs-shortcut-section = Keyboard shortcut
 skill-task-prefs-shortcut-desc = Open the Skill Task panel (not triggered inside text inputs)
 

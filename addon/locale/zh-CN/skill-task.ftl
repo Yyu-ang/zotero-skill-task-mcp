@@ -20,7 +20,7 @@ skill-task-prefs-token-hint = 凭据为可选项；不启用时 MCP 接口无需
 skill-task-prefs-task-section = 任务默认
 skill-task-prefs-lease = 领取租约时长（分钟）
 skill-task-prefs-maxfile = 文件交付大小上限（MB）
-skill-task-prefs-task-hint = 修改实时生效，无需重启；文件上限硬封顶 200MB。
+skill-task-prefs-task-hint = 修改实时生效，无需重启。
 skill-task-prefs-shortcut-section = 快捷键
 skill-task-prefs-shortcut-desc = 打开技能任务管理面板（输入框内不触发）
 
