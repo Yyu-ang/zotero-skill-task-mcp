@@ -16,6 +16,18 @@
 const PLUGIN_ID = 'zotero-skill-task@example.com';
 
 /**
+ * 安全获取 PluginHook（plugin.js 加载失败时返回 undefined，不抛错）。
+ * 注意：不能用 typeof PluginHook?.x 写法——PluginHook 未声明时 ?. 仍会抛 ReferenceError。
+ */
+function getHook() {
+  try {
+    return globalThis.PluginHook ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * 加载编译后的主插件脚本。
  * 生成的 plugin.js 文件位于 addon/content/ 下，
  * 包含了 src/ 中所有 TS 源文件的编译产物。
@@ -38,8 +50,9 @@ function loadPluginScript(rootURI) {
  */
 function install(data, reason) {
   loadPluginScript(data.rootURI);
-  if (typeof PluginHook?.install === 'function') {
-    PluginHook.install(data, reason);
+  const hook = getHook();
+  if (hook && typeof hook.install === 'function') {
+    hook.install(data, reason);
   }
 }
 
@@ -50,9 +63,12 @@ function install(data, reason) {
  */
 function startup(data, reason) {
   loadPluginScript(data.rootURI);
-  if (typeof PluginHook?.startup === 'function') {
-    PluginHook.startup(data, reason);
-    PluginHook.addToAllWindows?.();
+  const hook = getHook();
+  if (hook && typeof hook.startup === 'function') {
+    hook.startup(data, reason);
+    if (typeof hook.addToAllWindows === 'function') {
+      hook.addToAllWindows();
+    }
   }
 }
 
@@ -62,9 +78,12 @@ function startup(data, reason) {
  * @param {number} reason - APP_SHUTDOWN | ADDON_DISABLE
  */
 function shutdown(data, reason) {
-  if (typeof PluginHook?.shutdown === 'function') {
-    PluginHook.removeFromAllWindows?.();
-    PluginHook.shutdown(data, reason);
+  const hook = getHook();
+  if (hook && typeof hook.shutdown === 'function') {
+    if (typeof hook.removeFromAllWindows === 'function') {
+      hook.removeFromAllWindows();
+    }
+    hook.shutdown(data, reason);
   }
 }
 
@@ -74,7 +93,8 @@ function shutdown(data, reason) {
  * @param {number} reason - APP_UNINSTALL | ADDON_UNINSTALL | ADDON_DOWNGRADE
  */
 function uninstall(data, reason) {
-  if (typeof PluginHook?.uninstall === 'function') {
-    PluginHook.uninstall(data, reason);
+  const hook = getHook();
+  if (hook && typeof hook.uninstall === 'function') {
+    hook.uninstall(data, reason);
   }
 }
