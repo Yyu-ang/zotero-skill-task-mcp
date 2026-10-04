@@ -15,7 +15,6 @@
 
 import {
   DATA_DIR_NAME,
-  DEFAULT_LEASE_MS,
   type ITaskStore,
   type Task,
   type TaskCompleteResult,
@@ -25,6 +24,7 @@ import {
   uid,
 } from './types';
 import { LIMITS, error, log, truncateForDisplay } from './utils';
+import { getLeaseMs } from './prefs';
 
 /** 任务文件的文件名（位于 Zotero 数据目录下 DATA_DIR_NAME 目录内） */
 const TASKS_FILE_NAME = 'tasks.json';
@@ -230,9 +230,9 @@ export class TaskStore implements ITaskStore {
     skillGroupId: string | undefined,
     leaseMs: number
   ): Promise<Task | null> {
-    // 防御：非法租约时长回退到默认值，避免租约立即过期或溢出
+    // 防御：非法租约时长回退到偏好/默认值，避免租约立即过期或溢出
     const safeLeaseMs =
-      Number.isFinite(leaseMs) && leaseMs > 0 ? leaseMs : DEFAULT_LEASE_MS;
+      Number.isFinite(leaseMs) && leaseMs > 0 ? leaseMs : getLeaseMs();
     await this.releaseExpiredLeases();
 
     let candidate: Task | undefined;
@@ -367,9 +367,9 @@ export class TaskStore implements ITaskStore {
     if (!task || task.status !== 'pending') {
       return null;
     }
-    // 防御：非法租约时长回退到默认值
+    // 防御：非法租约时长回退到偏好/默认值
     const safeLeaseMs =
-      Number.isFinite(leaseMs) && leaseMs > 0 ? leaseMs : DEFAULT_LEASE_MS;
+      Number.isFinite(leaseMs) && leaseMs > 0 ? leaseMs : getLeaseMs();
     const now = Date.now();
     task.status = 'claimed';
     task.leaseExpiresAt = now + safeLeaseMs;

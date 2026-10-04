@@ -13,6 +13,72 @@ import { log } from './utils';
 const FTL_FILE = 'skill-task.ftl';
 
 /**
+ * 打开管理面板的键盘快捷键。
+ * 选用 Ctrl+Shift+J：已核对 Zotero 官方快捷键表，Ctrl+Shift+S/N/O/I/A/C/K/T/R
+ * 等均被占用，J 未被占用。macOS 上对应 ⌘+Shift+J（metaKey 分支）。
+ * 一处定义，设置页展示用。
+ */
+export const PANEL_SHORTCUT_LABEL = 'Ctrl+Shift+J';
+export const PANEL_SHORTCUT_LABEL_MAC = '⌘+Shift+J';
+
+const shortcutHandlers = new Map<Window, (e: KeyboardEvent) => void>();
+
+function isEditableTarget(t: EventTarget | null): boolean {
+  const el = t as HTMLElement | null;
+  if (!el || typeof (el as any).tagName !== 'string') return false;
+  const tag = String((el as any).tagName).toLowerCase();
+  return (
+    tag === 'input' ||
+    tag === 'textarea' ||
+    tag === 'select' ||
+    !!(el as any).isContentEditable
+  );
+}
+
+/**
+ * 在主窗口注册打开管理面板的快捷键（Zotero 8+ 无官方快捷键 API，
+ * 用窗口级 keydown 监听实现；捕获阶段注册，先于 Zotero 自有处理）。
+ * 输入框内按键不触发，避免劫持用户输入。
+ */
+export function attachPanelShortcut(window: Window, rootURI: string): void {
+  if (shortcutHandlers.has(window)) return;
+  const handler = (e: KeyboardEvent) => {
+    if (e.altKey || !(e.ctrlKey || e.metaKey) || !e.shiftKey) return;
+    if (e.key !== 'J' && e.key !== 'j') return;
+    if (isEditableTarget(e.target)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openSkillTaskPanel(rootURI);
+  };
+  window.addEventListener('keydown', handler, true);
+  shortcutHandlers.set(window, handler);
+}
+
+/** 移除某主窗口的面板快捷键监听。 */
+export function detachPanelShortcut(window: Window): void {
+  const h = shortcutHandlers.get(window);
+  if (!h) return;
+  try {
+    window.removeEventListener('keydown', h, true);
+  } catch {
+    // ignore
+  }
+  shortcutHandlers.delete(window);
+}
+
+/** 移除所有主窗口的面板快捷键监听（shutdown 时调用，防泄漏）。 */
+export function detachAllPanelShortcuts(): void {
+  for (const [w, h] of Array.from(shortcutHandlers)) {
+    try {
+      w.removeEventListener('keydown', h, true);
+    } catch {
+      // ignore
+    }
+    shortcutHandlers.delete(w);
+  }
+}
+
+/**
  * 在“工具”菜单注册“技能任务…”入口（Zotero 8+ API）。
  * @returns 注册的 menuID（用于取消注册），失败返回 null
  */

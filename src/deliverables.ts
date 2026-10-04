@@ -12,6 +12,7 @@
 
 import type { SkillDeliverable } from './types';
 import { LIMITS } from './utils';
+import { getDeliverableMaxBytes } from './prefs';
 
 /** 文件交付物默认扩展名白名单（小写、无点） */
 export const DEFAULT_ALLOWED_EXTENSIONS = [
@@ -116,7 +117,7 @@ export function normalizeDeliverable(input: unknown): SkillDeliverable {
   }
 }
 
-/** 解析文件交付物的实际大小上限（字节） */
+/** 解析文件交付物的实际大小上限（字节）：技能组自配优先，否则走偏好设置 */
 export function resolveMaxBytes(d: FileDeliverable): number {
   if (
     typeof d.maxBytes === 'number' &&
@@ -126,7 +127,7 @@ export function resolveMaxBytes(d: FileDeliverable): number {
   ) {
     return d.maxBytes;
   }
-  return LIMITS.deliverableFileBytes;
+  return getDeliverableMaxBytes();
 }
 
 /** 解析文件交付物的实际扩展名白名单（小写） */

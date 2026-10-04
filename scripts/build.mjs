@@ -74,6 +74,25 @@ async function main() {
     process.exit(1);
   }
 
+  // ── Step 1c: esbuild 打包设置面板前端（src/preferences.ts → addon/content/preferences.js）──
+  const prefsResult = await esbuild.build({
+    entryPoints: [resolve(ROOT, 'src/preferences.ts')],
+    outfile: resolve(ROOT, 'addon/content/preferences.js'),
+    bundle: true,
+    format: 'iife',
+    platform: 'browser',
+    target: 'es2022',
+    sourcemap: isDev ? 'inline' : false,
+    minify: !isDev,
+    treeShaking: true,
+    legalComments: 'inline',
+  });
+
+  if (prefsResult.errors.length) {
+    console.error('Preferences build failed:', prefsResult.errors);
+    process.exit(1);
+  }
+
   // 生成构建信息文件（构建产物，不进仓库）
   writeFileSync(
     resolve(ROOT, 'addon/content/build-info.json'),
@@ -90,8 +109,9 @@ async function main() {
 
   const jsStats = statSync(resolve(ROOT, 'addon/content/plugin.js'));
   const panelJsStats = statSync(resolve(ROOT, 'addon/content/panel.js'));
+  const prefsJsStats = statSync(resolve(ROOT, 'addon/content/preferences.js'));
   console.log(
-    `✓ esbuild complete (${isDev ? 'dev' : 'production'}) — plugin.js (${formatSize(jsStats.size)}), panel.js (${formatSize(panelJsStats.size)})`
+    `✓ esbuild complete (${isDev ? 'dev' : 'production'}) — plugin.js (${formatSize(jsStats.size)}), panel.js (${formatSize(panelJsStats.size)}), preferences.js (${formatSize(prefsJsStats.size)})`
   );
 
   // ── Step 2: 打包 XPI ──

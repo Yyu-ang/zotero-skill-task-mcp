@@ -12,6 +12,9 @@ import {
   unregisterToolsMenu,
   insertFluent,
   removeFluent,
+  attachPanelShortcut,
+  detachPanelShortcut,
+  detachAllPanelShortcuts,
 } from './ui';
 import { SkillGroupStore } from './skillGroupStore';
 import { TaskStore } from './taskStore';
@@ -29,6 +32,8 @@ export class PluginCore {
   private initialized: boolean = false;
   private menuID: string | null = null;
   private windowListener: any = null;
+  /** 设置面板 ID（PreferencePanes.register 返回） */
+  private prefPaneID: string | null = null;
 
   /** MVP 业务模块（startup 时组装，面板经 Zotero.SkillTask 访问） */
   private api: SkillTaskAPI | null = null;
@@ -96,6 +101,33 @@ export class PluginCore {
     this.watchNewWindows();
 
     this.initialized = true;
+
+    // P0 修复：startup() 是 async，bootstrap.js 里紧随其后的
+    // addToAllWindows?.() 因 initialized 仍为 false 被全部跳过，
+    // 导致初始主窗口从未注入 FTL、菜单 l10nID 无法解析。
+    // 在此补调一次（bootstrap 那次 early-return，无害）。
+    this.addToAllWindows();
+
+    // 注册插件设置面板（Zotero 8+ PreferencePanes 官方 API）
+    try {
+      const PP = (Zotero as any).PreferencePanes;
+      if (PP && typeof PP.register === 'function') {
+        const locale = String((Zotero as any).locale || '');
+        this.prefPaneID = await PP.register({
+          pluginID: this.id,
+          src: this.rootURI + 'content/preferences.xhtml',
+          label: locale.toLowerCase().startsWith('zh') ? '技能任务' : 'Skill Task',
+          scripts: [this.rootURI + 'content/preferences.js'],
+          stylesheets: [this.rootURI + 'content/preferences.css'],
+        });
+        log(`Preference pane registered: ${this.prefPaneID}`);
+      } else {
+        log('PreferencePanes API not available, settings pane skipped');
+      }
+    } catch (e) {
+      log(`Preference pane registration failed: ${e}`);
+    }
+
     log('Skill Task initialized successfully');
   }
 
@@ -130,6 +162,19 @@ export class PluginCore {
     unregisterToolsMenu(this.menuID);
     this.menuID = null;
 
+    // 注销设置面板（Zotero 也会在插件 shutdown 时自动注销，显式调用更稳妥）
+    if (this.prefPaneID) {
+      try {
+        (Zotero as any).PreferencePanes?.unregister?.(this.prefPaneID);
+      } catch {
+        // ignore
+      }
+      this.prefPaneID = null;
+    }
+
+    // 移除所有主窗口的快捷键监听（防泄漏）
+    detachAllPanelShortcuts();
+
     if (this.windowListener) {
       try {
         Services.wm.removeListener(this.windowListener);
@@ -160,18 +205,20 @@ export class PluginCore {
   // ──────────── 窗口管理 ────────────
 
   /**
-   * 主窗口加载时调用：注入 Fluent 本地化。
+   * 主窗口加载时调用：注入 Fluent 本地化 + 注册面板快捷键。
    */
   onMainWindowLoad({ window }: { window: Window }): void {
     if (!this.initialized) return;
     insertFluent(window);
+    attachPanelShortcut(window, this.rootURI);
   }
 
   /**
-   * 主窗口卸载时调用：移除 Fluent 引用。
+   * 主窗口卸载时调用：移除 Fluent 引用 + 快捷键监听。
    */
   onMainWindowUnload({ window }: { window: Window }): void {
     if (!this.initialized) return;
+    detachPanelShortcut(window);
     removeFluent(window);
   }
 

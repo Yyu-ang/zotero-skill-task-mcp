@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  addon/content/preferences.xhtml — 插件设置面板片段
+
+  由 Zotero.PreferencePanes.register 加载为 fragment（非完整文档）：
+  XUL 为默认命名空间，(X)HTML 标签用 html: 前缀。
+  静态文案用 data-l10n-id + 中文默认文本（Fluent 解析失败时仍可读）；
+  preferences.js 会在面板窗口内注入 skill-task.ftl。
+-->
+<vbox xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+      xmlns:html="http://www.w3.org/1999/xhtml">
+  <html:div class="st-prefs" id="st-prefs-root">
+
+    <html:div class="st-prefs-section">
+      <html:h2 class="st-sec-title" data-l10n-id="skill-task-prefs-mcp-section">MCP 服务</html:h2>
+
+      <html:label class="st-row">
+        <html:input type="checkbox" id="st-mcp-enabled" class="st-check" />
+        <html:span data-l10n-id="skill-task-prefs-mcp-enable">启用 MCP 服务</html:span>
+      </html:label>
+
+      <html:div class="st-row">
+        <html:span class="st-label" data-l10n-id="skill-task-prefs-mcp-addr">服务地址</html:span>
+        <html:code class="st-code" id="st-mcp-addr">—</html:code>
+      </html:div>
+
+      <html:div class="st-row">
+        <html:span class="st-label" data-l10n-id="skill-task-prefs-mcp-token">访问凭据</html:span>
+        <html:code class="st-code" id="st-mcp-token-state">—</html:code>
+        <html:button class="st-btn" id="st-mcp-token-show" data-l10n-id="skill-task-prefs-token-show">显示并复制</html:button>
+        <html:button class="st-btn st-btn-danger" id="st-mcp-token-regen" data-l10n-id="skill-task-prefs-token-regen">重新生成</html:button>
+      </html:div>
+      <html:input class="st-token" id="st-mcp-token-value" readonly="readonly" hidden="hidden" />
+
+      <html:div class="st-hint" data-l10n-id="skill-task-prefs-token-hint">凭据只在需要时显示；重新生成后旧凭据立即失效。请勿记入日志或随意分享。</html:div>
+      <html:div class="st-err" id="st-err" hidden="hidden" role="alert"></html:div>
+    </html:div>
+
+    <html:div class="st-prefs-section">
+      <html:h2 class="st-sec-title" data-l10n-id="skill-task-prefs-task-section">任务默认</html:h2>
+
+      <html:label class="st-row">
+        <html:span class="st-label" data-l10n-id="skill-task-prefs-lease">领取租约时长（分钟）</html:span>
+        <html:input type="number" class="st-num" id="st-lease-minutes" min="1" max="1440" step="1" />
+      </html:label>
+
+      <html:label class="st-row">
+        <html:span class="st-label" data-l10n-id="skill-task-prefs-maxfile">文件交付大小上限（MB）</html:span>
+        <html:input type="number" class="st-num" id="st-maxfile-mb" min="1" max="200" step="1" />
+      </html:label>
+
+      <html:div class="st-hint" data-l10n-id="skill-task-prefs-task-hint">修改实时生效，无需重启；文件上限硬封顶 200MB。</html:div>
+    </html:div>
+
+    <html:div class="st-prefs-section">
+      <html:h2 class="st-sec-title" data-l10n-id="skill-task-prefs-shortcut-section">快捷键</html:h2>
+      <html:div class="st-row">
+        <html:code class="st-code" id="st-shortcut-key">Ctrl+Shift+J</html:code>
+        <html:span data-l10n-id="skill-task-prefs-shortcut-desc">打开技能任务管理面板（输入框内不触发）</html:span>
+      </html:div>
+    </html:div>
+
+  </html:div>
+</vbox>

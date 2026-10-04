@@ -33,9 +33,9 @@ import type {
   SubmitResult,
   Task,
 } from './types';
-import { DEFAULT_LEASE_MS, DATA_DIR_NAME } from './types';
+import { DATA_DIR_NAME } from './types';
 import { resolveEarliestPdfPath } from './taskGenerator';
-import { prefs } from './prefs';
+import { prefs, getLeaseMs } from './prefs';
 import { LIMITS, error as logError, log, truncateForDisplay } from './utils';
 import {
   DELIVERABLES_DIR_NAME,
@@ -645,7 +645,7 @@ export class McpServer implements IMcpServer {
           skillGroupVersion: task.skillGroupVersion,
           instruction: task.instructionSnapshot,
           itemKey: task.itemKey,
-          leaseExpiresAt: task.leaseExpiresAt ?? Date.now() + DEFAULT_LEASE_MS,
+          leaseExpiresAt: task.leaseExpiresAt ?? Date.now() + getLeaseMs(),
           // FR-07：领取结果携带交付物 schema，提交时须按此格式
           deliverable: normalizeDeliverable(sg.deliverable),
         },
@@ -678,7 +678,7 @@ export class McpServer implements IMcpServer {
       return null;
     }
     // 注意：必须以 store.claimById(...) 形式调用，保持 this 指向 store
-    return (await store.claimById(id, DEFAULT_LEASE_MS)) as any | null;
+    return (await store.claimById(id, getLeaseMs())) as any | null;
   }
 
   /**

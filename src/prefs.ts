@@ -5,9 +5,16 @@
  * global=true：使用 "extensions.zotero-skill-task." 前缀（插件推荐）。
  */
 
+import { DEFAULT_LEASE_MS } from './types';
+import { LIMITS } from './utils';
+
 /** 插件偏好设置键 */
 export const PREFS = {
   ENABLED: 'extensions.zotero-skill-task.enabled',
+  /** 任务领取租约时长（分钟），默认 30；修改实时生效 */
+  TASK_LEASE_MINUTES: 'extensions.zotero-skill-task.task.leaseMinutes',
+  /** 文件交付物大小上限（MB），默认 50，硬上限 200；修改实时生效 */
+  DELIVERABLE_MAX_FILE_MB: 'extensions.zotero-skill-task.deliverable.maxFileMB',
 } as const;
 
 export type PrefKey = (typeof PREFS)[keyof typeof PREFS];
@@ -70,3 +77,27 @@ export class PrefsManager {
 }
 
 export const prefs = new PrefsManager();
+
+/**
+ * 当前租约时长（毫秒）：读偏好（分钟），非法值回退编译期默认值。
+ * 每次领取时调用，设置页修改后实时生效，无需重启。
+ */
+export function getLeaseMs(): number {
+  const mins = Number(prefs.get(PREFS.TASK_LEASE_MINUTES, 30));
+  if (Number.isFinite(mins) && mins > 0) {
+    return Math.floor(mins * 60 * 1000);
+  }
+  return DEFAULT_LEASE_MS;
+}
+
+/**
+ * 当前文件交付物大小上限（字节）：读偏好（MB），钳制在硬上限内。
+ * 设置页修改后实时生效，无需重启。
+ */
+export function getDeliverableMaxBytes(): number {
+  const hardCapMB = Math.floor(LIMITS.deliverableFileHardCapBytes / 1048576);
+  const mb = Number(prefs.get(PREFS.DELIVERABLE_MAX_FILE_MB, 50));
+  const safeMB =
+    Number.isFinite(mb) && mb > 0 ? Math.min(mb, hardCapMB) : 50;
+  return Math.floor(safeMB * 1048576);
+}
