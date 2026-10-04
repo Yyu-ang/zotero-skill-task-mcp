@@ -15,9 +15,10 @@ import { log } from './utils';
 // 创建插件核心实例
 const plugin = new PluginCore();
 
-// Green Frog 模式：插件实例挂在 Zotero.__addonInstance__ 上
-// preferences.xhtml 用 onload="Zotero.__addonInstance__['zotero-skill-task'].hooks.onPrefsEvent('load', {window})"
-// 回调到这里，避免单独的 preferences.js 沙箱问题。
+// Green Frog 模式：插件实例单层挂在 Zotero['zotero-skill-task'] 上
+// （对标 Zotero.greenfrog / Zotero.AIButler），bootstrap.js 直接调用其 hooks；
+// 设置页走 PreferencePanes.register 加载的 preferences.js，经 Zotero.SkillTask
+// 单通道访问业务 API（xhtml 无 onload 回调）。
 try {
   // bootstrap.js 经 loadSubScript 的 ctx scope 把真实 Zotero 传进来（ctx.Zotero）
   // 直接用全局 Zotero（如果可用），否则用 scope 传入的

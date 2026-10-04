@@ -165,27 +165,6 @@ export class PluginCore {
   }
 
   /**
-   * 设置面板事件回调（Green Frog 模式）。
-   * preferences.xhtml 的 vbox onload 会调用：
-   *   Zotero.__addonInstance__['zotero-skill-task'].hooks.onPrefsEvent('load', {window})
-   * 此时 preferences.js（如果还有）尚未加载，UI 初始化逻辑移到这里，
-   * 直接操作传入 window 的 document，避免跨沙箱问题。
-   */
-  public onPrefsEvent(type: string, data: { window: any }): void {
-    if (type !== 'load') return;
-    try {
-      const win = data?.window;
-      if (!win) return;
-      log('[prefs] onPrefsEvent load');
-      // 动态 UI 初始化（如 MCP 状态刷新）由 preferences.js 处理（如果已加载）；
-      // 这里只做主实例侧的准备工作。实际控件绑定仍走 preferences.js，
-      // 通过 Zotero.SkillTask API 访问（core.ts startup 时已挂载）。
-    } catch (e) {
-      log(`[prefs] onPrefsEvent failed: ${e}`);
-    }
-  }
-
-  /**
    * 开发模式热重载监听（仅 dev 构建）。
    * 约定：serve.mjs 在每次重建后 `touch <profile>/extensions/.skill-task-dev-reload`；
    * 本方法每秒检查该文件 mtime，变化即经 AddonManager.reload() 热重载。
