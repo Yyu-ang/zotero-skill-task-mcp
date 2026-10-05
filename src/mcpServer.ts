@@ -51,6 +51,7 @@ declare const TextEncoder: any;
 
 /** MCP 端点路径（技术文档 §2.1 方案 A） */
 const MCP_PATH = '/skilltask/mcp';
+const MCP_HOST = '127.0.0.1';
 /** 默认关闭开关（addon/prefs.js 中默认 false） */
 const PREF_MCP_ENABLED = 'extensions.zotero-skill-task.mcp.enabled';
 /** Bearer token 存储键（由 ensureToken 生成/持久化） */
@@ -235,10 +236,24 @@ function collectChildNotes(
 
 /** 探测 Connector Server 端口（取不到为 null，绝不写回 pref） */
 function detectServerPort(): number | null {
+  const Z = zoteroGlobal();
+  // 优先读取 Zotero.Server 实际监听端口，而不是只看配置 pref。
+  // server.js 暴露的 port getter 返回 HttpServer.identity.primaryPort。
   try {
-    const Z = zoteroGlobal();
-    const p = Z?.Prefs?.get?.('httpServer.port', true);
-    return typeof p === 'number' && p > 0 ? p : null;
+    const actual = Number(Z?.Server?.port);
+    if (Number.isInteger(actual) && actual > 0 && actual <= 65535) {
+      return actual;
+    }
+  } catch {
+    // Server 尚未初始化时 port getter 会抛错，继续读配置值。
+  }
+  try {
+    // httpServer.port 是 Zotero 自身 pref，不能传 global=true；
+    // 否则会错误读取名为 "httpServer.port" 的绝对 pref。
+    const configured = Number(Z?.Prefs?.get?.('httpServer.port'));
+    return Number.isInteger(configured) && configured > 0 && configured <= 65535
+      ? configured
+      : null;
   } catch {
     return null;
   }
@@ -393,11 +408,23 @@ export class McpServer implements IMcpServer {
   /**
    * 服务状态：绝不抛错（端口探测失败返回 null，由调用方展示为"未知"）。
    */
-  getStatus(): { enabled: boolean; path: string; port: number | null } {
+  getStatus(): {
+    enabled: boolean;
+    host: string;
+    path: string;
+    port: number | null;
+    url: string | null;
+    lanAccessible: boolean;
+  } {
+    const port = detectServerPort();
     return {
       enabled: this.isEnabled(),
+      host: MCP_HOST,
       path: MCP_PATH,
-      port: detectServerPort(),
+      port,
+      url: port ? `http://${MCP_HOST}:${port}${MCP_PATH}` : null,
+      // Zotero Connector Server 是 loopback 服务，并校验 Host 为 localhost/127.0.0.1/::1。
+      lanAccessible: false,
     };
   }
 
