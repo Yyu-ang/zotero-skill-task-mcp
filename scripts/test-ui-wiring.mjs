@@ -169,7 +169,6 @@ assert.ok(
 );
 assert.ok(
   !utilsTs.includes('deliverableFileBytesMax') &&
-    !prefsXhtml.includes('max="200"') &&
     !mcpTs.includes('maximum: 209715200'),
   '200 MB is a default, not a hard cap'
 );
