@@ -6,7 +6,7 @@
  * 业务功能（技能组、任务队列、MCP）后续在此组合。
  */
 
-import { log, IS_PRODUCTION } from './utils';
+import { log, error, IS_PRODUCTION } from './utils';
 import {
   registerToolsMenu,
   unregisterToolsMenu,
@@ -103,6 +103,7 @@ export class PluginCore {
       }
       this.api = { skillGroups, tasks, generator, mcp, version: this.version };
       // 面板（panel.js）经 Zotero.SkillTask 访问业务 API
+      delete (Zotero as any).SkillTaskStartupError;
       (Zotero as any).SkillTask = this.api;
       // 定时释放过期租约（5 分钟），避免长会话中任务被租约卡住
       this.leaseTimer = setInterval(() => {
@@ -116,8 +117,12 @@ export class PluginCore {
       }, 5 * 60 * 1000);
       log('Skill Task business modules wired');
     } catch (e) {
-      log(`Business modules failed to initialize: ${e}`);
-      // 业务模块失败不影响菜单/面板框架本身
+      const startupError =
+        e instanceof Error ? e : new Error(`Business modules failed to initialize: ${String(e)}`);
+      (Zotero as any).SkillTaskStartupError = startupError.message;
+      // 生产构建的 log() 会静默；初始化失败必须走 error()，否则只表现为 UI 空白/未就绪。
+      error(startupError);
+      // 业务模块失败不影响菜单/面板框架本身：UI 会显示明确的未就绪状态。
     }
 
     // 监听后续打开的主窗口，为其注入 Fluent 本地化
@@ -284,6 +289,7 @@ export class PluginCore {
     if ((Zotero as any).SkillTask === this.api) {
       delete (Zotero as any).SkillTask;
     }
+    delete (Zotero as any).SkillTaskStartupError;
     this.api = null;
 
     unregisterToolsMenu(this.menuID);
