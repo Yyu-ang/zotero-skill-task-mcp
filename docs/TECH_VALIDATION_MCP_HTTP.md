@@ -183,8 +183,9 @@ function onShutdown() {
   - 现代 response 带 `resultType: "complete"`，并在 `_meta["io.modelcontextprotocol/serverInfo"]` 暴露服务端身份；
   - `tools/list` 返回 `ttlMs/cacheScope`；
   - 三个业务工具都声明 `outputSchema`，`tools/call` 同时返回文本 `content` 与 `structuredContent`。
-- **Legacy：2025-11-25**
+- **Legacy handshake：2025-11-25 / 2025-06-18 / 2025-03-26 / 2024-11-05**
   - 保留 `initialize`、`ping`、`tools/list`、`tools/call`；
+  - `initialize` 按客户端提出的受支持 revision 返回同一版本；未知/现代 revision 才回退到最新 handshake revision `2025-11-25`；
   - 不要求 2026 envelope/header；
   - 响应保持原有 legacy 形态，避免现有客户端因升级失效。
 
