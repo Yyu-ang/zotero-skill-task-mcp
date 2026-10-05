@@ -222,12 +222,30 @@ assert.ok(
   'deliverable form must allow a target filename and overwrite/skip policy'
 );
 assert.ok(
+  panelTs.includes('const taskStatusGroupOpen = new Map<string, boolean>();') &&
+    panelTs.includes('bindTaskStatusGroupState(') &&
+    panelTs.includes("taskStatusGroupKey(sg.id, st)") &&
+    panelTs.includes("taskStatusGroupKey(sg.id, 'done')"),
+  'expanding one task must preserve the user-selected open/closed state of status groups'
+);
+assert.ok(
+  panelTs.includes("d.existingAttachmentPolicy =\n            filePolicy.value === 'overwrite' ? 'overwrite' : 'skip';") &&
+    panelTs.includes("d.existingAttachmentPolicy =\n              mdPolicy.value === 'overwrite' ? 'overwrite' : 'skip';"),
+  'attachment conflict dropdown selection must persist independently of the attach checkbox'
+);
+assert.ok(
   taskGeneratorTs.includes('findExistingDeliverableAttachment') &&
     taskGeneratorTs.includes('createCompleted(') &&
     taskGeneratorTs.includes('completedExisting++') &&
     taskStoreTs.includes('findLatestBySkillAndItem') &&
     taskStoreTs.includes('async createCompleted('),
   'scan must persist skip-on-existing attachments as completed tasks'
+);
+assert.ok(
+  taskGeneratorTs.includes('deliverableAttachmentConflict(') &&
+    taskGeneratorTs.includes("conflict?.policy === 'overwrite'") &&
+    taskGeneratorTs.includes('latest.deliverableRef === conflict.targetName'),
+  'switching an existing-attachment completion from skip to overwrite must allow a new task to be generated'
 );
 assert.ok(
   attachmentsTs.includes('attachmentFilename') &&
