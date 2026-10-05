@@ -59,7 +59,7 @@ const PREF_MCP_TOKEN = 'extensions.zotero-skill-task.mcp.token';
 /** 访问凭据开关（可选项，默认关闭；关闭时 MCP 接口无需鉴权） */
 const PREF_MCP_TOKEN_ENABLED = 'extensions.zotero-skill-task.mcp.tokenEnabled';
 /** 响应的 MCP 协议版本 */
-const MCP_PROTOCOL_VERSION = '2024-11-05';
+const MCP_PROTOCOL_VERSION = '2025-11-25';
 /** JSON-RPC 错误码 */
 const ERR_PARSE = -32700;
 const ERR_METHOD_NOT_FOUND = -32601;
@@ -349,6 +349,8 @@ export class McpServer implements IMcpServer {
     }
     try {
       if (v) {
+        // 默认启用访问凭据时，启服务前确保 token 已经存在。
+        if (this.isTokenEnabled()) this.ensureToken();
         this.register();
       } else {
         this.unregister();
@@ -399,6 +401,7 @@ export class McpServer implements IMcpServer {
   setTokenEnabled(v: boolean): void {
     try {
       prefs.set(PREF_MCP_TOKEN_ENABLED, v);
+      if (v) this.ensureToken();
     } catch (e) {
       throw new Error(`访问凭据开关保存失败：${errMsg(e)}`);
     }
@@ -495,6 +498,8 @@ export class McpServer implements IMcpServer {
     }
     try {
       switch (method) {
+        case 'ping':
+          return this.jsonOk(id, {});
         case 'initialize':
           return this.jsonOk(id, {
             protocolVersion: MCP_PROTOCOL_VERSION,
