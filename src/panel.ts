@@ -21,6 +21,7 @@
  */
 
 import type {
+  SkillAssetManifest,
   SkillDeliverable,
   SkillGroup,
   SkillGroupCreateData,
@@ -633,9 +634,24 @@ function skillCard(sg: SkillGroup): HTMLElement {
 
   card.append(summaryLine('search', scopeSummary(sg)));
   card.append(summaryLine('file-text', materialsSummary(sg)));
-  if (sg.instruction) {
+  if (sg.description) {
+    card.append(el('div', 'instruction', sg.description));
+  } else if (sg.instruction) {
     card.append(el('div', 'instruction', sg.instruction));
   }
+  const assetSummary = el('div', 'summary', getString('panel-sg-assets-loading'));
+  card.append(assetSummary);
+  void api!.skillGroups.getAssetManifest(sg.id).then((manifest) => {
+    const skillPart = manifest.skillFile
+      ? getString('panel-sg-skill-file-ready')
+      : getString('panel-sg-skill-file-missing');
+    const refsPart = sg.referencesEnabled
+      ? getString('panel-sg-references-count', { n: manifest.references.length })
+      : getString('panel-sg-references-off');
+    assetSummary.textContent = `${skillPart} · ${refsPart}`;
+  }).catch(() => {
+    assetSummary.textContent = getString('panel-sg-assets-unavailable');
+  });
 
   // 更新时间（相对时间，title 里放绝对时间）
   const meta = el('div', 'meta-line');
@@ -843,6 +859,47 @@ function formLabel(text: string, required = false): HTMLElement {
   return l;
 }
 
+function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function fileToBytes(file: File): Promise<Uint8Array> {
+  return new Uint8Array(await file.arrayBuffer());
+}
+
+function bindFileDropZone(
+  zone: HTMLElement,
+  input: HTMLInputElement,
+  onFiles: (files: File[]) => void
+): void {
+  const pick = (): void => input.click();
+  zone.addEventListener('click', pick);
+  zone.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' || ev.key === ' ') {
+      ev.preventDefault();
+      pick();
+    }
+  });
+  input.addEventListener('change', () => {
+    onFiles(Array.from(input.files ?? []));
+    input.value = '';
+  });
+  zone.addEventListener('dragover', (ev) => {
+    ev.preventDefault();
+    zone.classList.add('dragging');
+  });
+  zone.addEventListener('dragleave', () => zone.classList.remove('dragging'));
+  zone.addEventListener('drop', (ev) => {
+    ev.preventDefault();
+    zone.classList.remove('dragging');
+    onFiles(Array.from(ev.dataTransfer?.files ?? []));
+  });
+}
+
+
 /** 渲染新增/编辑表单（页内表单，不弹窗） */
 function renderForm(wrap: HTMLElement): void {
   if (!api || !formState) {
@@ -861,6 +918,163 @@ function renderForm(wrap: HTMLElement): void {
   nameInput.placeholder = getString('panel-form-name-ph');
   nameField.append(nameInput);
   wrap.append(nameField);
+
+  // —— 技能说明 ——
+  const descField = el('div', 'field');
+  descField.append(formLabel(getString('panel-form-description')));
+  const descInput = el('textarea');
+  descInput.value = editing?.description ?? '';
+  descInput.placeholder = getString('panel-form-description-ph');
+  descField.append(descInput);
+  wrap.append(descField);
+
+  // —— SKILL.md 技能文件 ——
+  let pendingSkillFile: File | null = null;
+  let pendingReferenceFiles: File[] = [];
+  const removedReferenceNames = new Set<string>();
+  let existingManifest: SkillAssetManifest | null = null;
+
+  const skillFileField = el('div', 'field');
+  skillFileField.append(formLabel(getString('panel-form-skill-file')));
+  const skillInput = el('input');
+  skillInput.type = 'file';
+  skillInput.accept = '.md,text/markdown,text/plain';
+  skillInput.hidden = true;
+  const skillDrop = el('div', 'drop-zone');
+  skillDrop.tabIndex = 0;
+  skillDrop.setAttribute('role', 'button');
+  skillDrop.setAttribute('aria-label', getString('panel-form-skill-file-drop'));
+  skillDrop.innerHTML = `${iconSVG('file-text', 'ic')}<strong>${getString('panel-form-skill-file-drop')}</strong><span>${getString('panel-form-skill-file-hint')}</span>`;
+  const skillFileStatus = el('div', 'upload-status', getString('panel-form-skill-file-none'));
+  skillFileField.append(skillInput, skillDrop, skillFileStatus);
+  wrap.append(skillFileField);
+
+  bindFileDropZone(skillDrop, skillInput, (files) => {
+    const file = files[0];
+    if (!file) return;
+    if (!/\.md$/i.test(file.name)) {
+      showError(getString('panel-form-err-skill-md'));
+      return;
+    }
+    pendingSkillFile = file;
+    skillFileStatus.textContent = getString('panel-form-skill-file-selected', {
+      name: file.name,
+      size: formatFileSize(file.size),
+    });
+  });
+
+  // —— references/ 可选参考资料 ——
+  const refsField = el('div', 'field');
+  const refsToggleRow = el('div', 'check-row');
+  const refsEnabled = el('input');
+  refsEnabled.type = 'checkbox';
+  refsEnabled.checked = editing?.referencesEnabled === true;
+  refsToggleRow.append(
+    refsEnabled,
+    el('span', '', getString('panel-form-references-enable'))
+  );
+  refsField.append(refsToggleRow);
+
+  const refsBox = el('div', 'references-box');
+  const refsDesc = el('textarea');
+  refsDesc.value = editing?.referencesDescription ?? '';
+  refsDesc.placeholder = getString('panel-form-references-description-ph');
+
+  const refsInput = el('input');
+  refsInput.type = 'file';
+  refsInput.multiple = true;
+  refsInput.hidden = true;
+  const refsDrop = el('div', 'drop-zone');
+  refsDrop.tabIndex = 0;
+  refsDrop.setAttribute('role', 'button');
+  refsDrop.setAttribute('aria-label', getString('panel-form-references-drop'));
+  refsDrop.innerHTML = `${iconSVG('package', 'ic')}<strong>${getString('panel-form-references-drop')}</strong><span>${getString('panel-form-references-hint')}</span>`;
+  const refsList = el('div', 'upload-list');
+
+  const renderReferenceList = (): void => {
+    refsList.replaceChildren();
+    const existing = (existingManifest?.references ?? []).filter(
+      (f) => !removedReferenceNames.has(f.name)
+    );
+    for (const file of existing) {
+      const row = el('div', 'upload-file');
+      row.append(
+        el('span', 'upload-name', file.name),
+        el('span', 'muted', formatFileSize(file.size)),
+        opBtn(
+          getString('panel-action-remove'),
+          () => {
+            removedReferenceNames.add(file.name);
+            renderReferenceList();
+          },
+          { icon: 'x', secondary: true, title: getString('panel-form-reference-remove-title') }
+        )
+      );
+      refsList.append(row);
+    }
+    pendingReferenceFiles.forEach((file, index) => {
+      const row = el('div', 'upload-file pending');
+      row.append(
+        el('span', 'upload-name', file.name),
+        el('span', 'muted', formatFileSize(file.size)),
+        opBtn(
+          getString('panel-action-remove'),
+          () => {
+            pendingReferenceFiles.splice(index, 1);
+            renderReferenceList();
+          },
+          { icon: 'x', secondary: true, title: getString('panel-form-reference-remove-title') }
+        )
+      );
+      refsList.append(row);
+    });
+    if (!existing.length && !pendingReferenceFiles.length) {
+      refsList.append(el('div', 'muted', getString('panel-form-references-empty')));
+    }
+  };
+
+  bindFileDropZone(refsDrop, refsInput, (files) => {
+    const byName = new Map(pendingReferenceFiles.map((file) => [file.name, file]));
+    for (const file of files) {
+      if (file.name && file.size > 0) byName.set(file.name, file);
+    }
+    pendingReferenceFiles = [...byName.values()];
+    renderReferenceList();
+  });
+
+  const syncReferencesBox = (): void => {
+    refsBox.hidden = !refsEnabled.checked;
+  };
+  refsEnabled.addEventListener('change', syncReferencesBox);
+  refsBox.append(
+    formLabel(getString('panel-form-references-description')),
+    refsDesc,
+    refsInput,
+    refsDrop,
+    refsList
+  );
+  refsField.append(refsBox);
+  wrap.append(refsField);
+  syncReferencesBox();
+  renderReferenceList();
+
+  if (editing) {
+    void api.skillGroups
+      .getAssetManifest(editing.id)
+      .then((manifest) => {
+        existingManifest = manifest;
+        if (manifest.skillFile) {
+          skillFileStatus.textContent = getString('panel-form-skill-file-existing', {
+            path: manifest.skillFile.path,
+            size: formatFileSize(manifest.skillFile.size),
+          });
+        }
+        renderReferenceList();
+      })
+      .catch((e: unknown) => {
+        showError(getString('panel-form-err-assets-load', { error: errMsg(e) }));
+      });
+  }
 
   // —— 任务指令 ——
   const instrField = el('div', 'field');
@@ -1114,6 +1328,7 @@ function renderForm(wrap: HTMLElement): void {
           showError(getString('panel-form-err-name-required'));
           return;
         }
+        const description = descInput.value.trim();
         const instruction = instrInput.value.trim();
         if (!instruction) {
           showError(getString('panel-form-err-instruction-required'));
@@ -1203,10 +1418,14 @@ function renderForm(wrap: HTMLElement): void {
           deliverable = { type: 'note' };
         }
         try {
+          let saved: SkillGroup;
           if (editing) {
-            await api!.skillGroups.update(editing.id, {
+            saved = await api!.skillGroups.update(editing.id, {
               name,
+              description,
               instruction,
+              referencesEnabled: refsEnabled.checked,
+              referencesDescription: refsDesc.value.trim(),
               scope,
               materials,
               deliverable,
@@ -1214,12 +1433,36 @@ function renderForm(wrap: HTMLElement): void {
           } else {
             const data: SkillGroupCreateData = {
               name,
+              description,
               instruction,
+              referencesEnabled: refsEnabled.checked,
+              referencesDescription: refsDesc.value.trim(),
               scope,
               materials,
               deliverable,
             };
-            await api!.skillGroups.create(data);
+            saved = await api!.skillGroups.create(data);
+          }
+
+          if (pendingSkillFile) {
+            await api!.skillGroups.writeSkillFile(
+              saved.id,
+              await fileToBytes(pendingSkillFile)
+            );
+          }
+          for (const fileName of removedReferenceNames) {
+            await api!.skillGroups.removeReferenceFile(saved.id, fileName);
+          }
+          if (refsEnabled.checked && pendingReferenceFiles.length) {
+            await api!.skillGroups.writeReferenceFiles(
+              saved.id,
+              await Promise.all(
+                pendingReferenceFiles.map(async (file) => ({
+                  name: file.name,
+                  bytes: await fileToBytes(file),
+                }))
+              )
+            );
           }
         } catch (e) {
           showError(e instanceof Error ? e.message : String(e));
