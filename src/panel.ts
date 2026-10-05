@@ -388,6 +388,8 @@ let taskStatusFilter: TaskStatus | 'all' = 'all';
 const selectedTasks = new Set<string>();
 /** 已展开详情的任务 id */
 const expandedTasks = new Set<string>();
+/** 任务状态大栏目的展开状态；重绘任务列表时必须保持用户当前折叠/展开选择 */
+const taskStatusGroupOpen = new Map<string, boolean>();
 /** MCP 审计视图展示的最近事件条数 */
 const AUDIT_LIMIT = 20;
 
@@ -1538,10 +1540,8 @@ function renderForm(wrap: HTMLElement): void {
           }
           const targetFileName = fileNameInput.value.trim();
           if (targetFileName) d.targetFileName = targetFileName;
-          if (attachFile.checked) {
-            d.existingAttachmentPolicy =
-              filePolicy.value === 'overwrite' ? 'overwrite' : 'skip';
-          }
+          d.existingAttachmentPolicy =
+            filePolicy.value === 'overwrite' ? 'overwrite' : 'skip';
           const mbText = maxMBInput.value.trim();
           if (mbText) {
             const mb = Number(mbText);
@@ -1568,10 +1568,10 @@ function renderForm(wrap: HTMLElement): void {
           if (target === 'file') {
             const targetFileName = mdFileNameInput.value.trim();
             if (targetFileName) d.targetFileName = targetFileName;
+            d.existingAttachmentPolicy =
+              mdPolicy.value === 'overwrite' ? 'overwrite' : 'skip';
             if (attachMd.checked) {
               d.attachToItem = true;
-              d.existingAttachmentPolicy =
-                mdPolicy.value === 'overwrite' ? 'overwrite' : 'skip';
             }
           }
           deliverable = d;
@@ -1905,6 +1905,23 @@ function renderTaskList(): void {
   updateBatchBar();
 }
 
+function taskStatusGroupKey(skillGroupId: string, status: string): string {
+  return `${skillGroupId}::${status}`;
+}
+
+function bindTaskStatusGroupState(
+  details: HTMLDetailsElement,
+  key: string,
+  defaultOpen: boolean
+): void {
+  details.open = taskStatusGroupOpen.has(key)
+    ? taskStatusGroupOpen.get(key) === true
+    : defaultOpen;
+  details.addEventListener('toggle', () => {
+    taskStatusGroupOpen.set(key, details.open);
+  });
+}
+
 /** 单个技能组的任务分组块；filtered 传入时只展示其中任务（搜索/筛选命中） */
 function taskGroupSection(sg: SkillGroup, filtered?: Task[]): HTMLElement {
   const sec = el('section', 'card');
@@ -1966,8 +1983,12 @@ function taskGroupSection(sg: SkillGroup, filtered?: Task[]): HTMLElement {
     if (filtering && items.length === 0) {
       continue;
     }
-    const det = el('details', 'status-group');
-    det.open = items.length > 0 && st !== 'cancelled';
+    const det = el('details', 'status-group') as HTMLDetailsElement;
+    bindTaskStatusGroupState(
+      det,
+      taskStatusGroupKey(sg.id, st),
+      items.length > 0 && st !== 'cancelled'
+    );
     const sum = el('summary');
     const sumIc = el('span', 'sum-ic');
     sumIc.style.color = `var(--${STATUS_META[st].badge === 'accent' ? 'accent' : STATUS_META[st].badge})`;
@@ -1989,7 +2010,12 @@ function taskGroupSection(sg: SkillGroup, filtered?: Task[]): HTMLElement {
   // 已完成：可折叠列表，支持展开详情
   const dones = tasks.filter((t) => t.status === 'done');
   if (!filtering || dones.length > 0) {
-    const doneDet = el('details', 'status-group');
+    const doneDet = el('details', 'status-group') as HTMLDetailsElement;
+    bindTaskStatusGroupState(
+      doneDet,
+      taskStatusGroupKey(sg.id, 'done'),
+      false
+    );
     const doneSum = el('summary');
     const doneIc = el('span', 'sum-ic');
     doneIc.style.color = 'var(--ok)';
