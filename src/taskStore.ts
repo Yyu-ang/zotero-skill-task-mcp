@@ -171,6 +171,21 @@ export class TaskStore implements ITaskStore {
     return found ? { ...found } : undefined;
   }
 
+
+  findLatestBySkillAndItem(
+    skillGroupId: string,
+    itemKey: string
+  ): Task | undefined {
+    let found: Task | undefined;
+    for (const task of this.tasks.values()) {
+      if (task.skillGroupId !== skillGroupId || task.itemKey !== itemKey) continue;
+      if (!found || task.createdAt >= found.createdAt) {
+        found = task;
+      }
+    }
+    return found ? { ...found } : undefined;
+  }
+
   /** 取内部任务记录（无拷贝）；不存在时抛错（id 超长时截断展示） */
   private require(id: string): Task {
     const task = this.tasks.get(id);
@@ -217,6 +232,58 @@ export class TaskStore implements ITaskStore {
       createdAt: now,
       claimedAt: null,
       completedAt: null,
+    };
+    this.tasks.set(task.id, task);
+    await this.persist();
+    return { ...task };
+  }
+
+
+  @traced
+  async createCompleted(
+    data: TaskCreateData,
+    result: TaskCompleteResult
+  ): Promise<Task> {
+    if (typeof data.skillGroupId !== 'string' || !data.skillGroupId.trim()) {
+      throw new Error('创建已完成任务失败：技能组 ID 无效');
+    }
+    if (typeof data.itemKey !== 'string' || !data.itemKey.trim()) {
+      throw new Error('创建已完成任务失败：条目 key 无效');
+    }
+    if (
+      result.deliverableType !== 'note' &&
+      result.deliverableType !== 'file' &&
+      result.deliverableType !== 'markdown'
+    ) {
+      throw new Error('创建已完成任务失败：交付物类型无效');
+    }
+    if (typeof result.deliverableRef !== 'string' || !result.deliverableRef.trim()) {
+      throw new Error('创建已完成任务失败：交付物引用无效');
+    }
+    const now = Date.now();
+    const task: Task = {
+      id: uid(),
+      skillGroupId: data.skillGroupId,
+      skillGroupVersion: data.skillGroupVersion,
+      instructionSnapshot: data.instructionSnapshot,
+      itemKey: data.itemKey,
+      status: 'done',
+      leaseExpiresAt: null,
+      attempts: 0,
+      lastError: null,
+      noteKey:
+        typeof result.noteKey === 'string' && result.noteKey
+          ? result.noteKey
+          : null,
+      deliverableType: result.deliverableType,
+      deliverableRef: result.deliverableRef,
+      attachmentKey:
+        typeof result.attachmentKey === 'string' && result.attachmentKey
+          ? result.attachmentKey
+          : null,
+      createdAt: now,
+      claimedAt: null,
+      completedAt: now,
     };
     this.tasks.set(task.id, task);
     await this.persist();
