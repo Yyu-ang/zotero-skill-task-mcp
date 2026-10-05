@@ -26,6 +26,9 @@ const utilsTs = read('src/utils.ts');
 const menuIconSvg = read('addon/content/icons/icon.svg');
 const panelTs = read('src/panel.ts');
 const skillStoreTs = read('src/skillGroupStore.ts');
+const taskGeneratorTs = read('src/taskGenerator.ts');
+const taskStoreTs = read('src/taskStore.ts');
+const attachmentsTs = read('src/attachments.ts');
 
 const includeSrc = 'chrome://zotero/content/include.js';
 const panelScript = 'src="panel.js"';
@@ -190,6 +193,29 @@ assert.ok(
     mcpTs.includes('skillAssets') &&
     mcpTs.includes('skillAssets.references = []'),
   'MCP injection/claim must support skill assets and respect disabled references'
+);
+
+assert.ok(
+  panelTs.includes('targetFileName') &&
+    panelTs.includes('existingAttachmentPolicy') &&
+    panelTs.includes("panel-form-existing-overwrite") &&
+    panelTs.includes("panel-form-existing-skip"),
+  'deliverable form must allow a target filename and overwrite/skip policy'
+);
+assert.ok(
+  taskGeneratorTs.includes('findExistingDeliverableAttachment') &&
+    taskGeneratorTs.includes('createCompleted(') &&
+    taskGeneratorTs.includes('completedExisting++') &&
+    taskStoreTs.includes('findLatestBySkillAndItem') &&
+    taskStoreTs.includes('async createCompleted('),
+  'scan must persist skip-on-existing attachments as completed tasks'
+);
+assert.ok(
+  attachmentsTs.includes('attachmentFilename') &&
+    attachmentsTs.includes('findChildAttachmentsByFilename') &&
+    mcpTs.includes("policy === 'overwrite'") &&
+    mcpTs.includes("policy === 'skip'"),
+  'submit must detect same-name attachments and honor overwrite/skip'
 );
 
 for (const required of [
