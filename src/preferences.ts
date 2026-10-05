@@ -115,7 +115,14 @@ function init(): void {
 
   const api = getAPI();
   if (!api?.mcp) {
-    showError(getString('prefs-api-missing'));
+    let msg = getString('prefs-api-missing');
+    try {
+      const startupError = String((Zotero as any)?.SkillTaskStartupError ?? '').trim();
+      if (startupError) msg += `（${startupError}）`;
+    } catch {
+      // ignore
+    }
+    showError(msg);
     root.setAttribute('data-skill-task-initialized', 'true');
     return;
   }
