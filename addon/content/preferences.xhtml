@@ -42,7 +42,7 @@
 
     <hbox align="center">
       <checkbox id="st-mcp-token-enabled" native="true"
-                data-l10n-id="skill-task-prefs-token-enable" label="启用访问凭据（建议保持开启）"/>
+                data-l10n-id="skill-task-prefs-token-enable" label="启用访问凭据（可选，默认关闭）"/>
     </hbox>
 
     <hbox align="center" id="st-mcp-token-row">
@@ -55,7 +55,7 @@
     </hbox>
     <html:input id="st-mcp-token-value" type="text" readonly="readonly" hidden="hidden"/>
 
-    <description data-l10n-id="skill-task-prefs-token-hint">访问凭据默认启用；关闭后 MCP 接口将无需鉴权。重新生成会使旧凭据立即失效，请勿记入日志或随意分享。</description>
+    <description data-l10n-id="skill-task-prefs-token-hint">访问凭据默认关闭；启用后 MCP 请求需要携带凭据。重新生成会使旧凭据立即失效，请勿记入日志或随意分享。</description>
     <description id="st-err" hidden="true" style="color: #c00;"/>
   </groupbox>
 
