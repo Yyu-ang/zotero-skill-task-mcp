@@ -17,6 +17,8 @@
 import {
   DATA_DIR_NAME,
   ISkillGroupStore,
+  SkillAssetFile,
+  SkillAssetUpload,
   SkillGroup,
   SkillGroupCreateData,
   SkillGroupPatch,
@@ -24,10 +26,13 @@ import {
 } from './types';
 import { LIMITS, log, error, truncateForDisplay } from './utils';
 import { traced } from './utils/trace';
-import { assertValidDeliverable } from './deliverables';
+import { assertValidDeliverable, sanitizeFileName } from './deliverables';
 
 /** 持久化文件名 */
 const FILE_NAME = 'skill-groups.json';
+const SKILLS_DIR_NAME = 'skills';
+const SKILL_FILE_NAME = 'SKILL.md';
+const REFERENCES_DIR_NAME = 'references';
 
 /** 深拷贝：保护内存中的内部状态不被调用方篡改 */
 function clone<T>(value: T): T {
@@ -58,6 +63,14 @@ function assertValidInstruction(instruction: unknown): string {
   return trimmed;
 }
 
+function assertOptionalText(value: unknown, max: number, label: string): string {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (text.length > max) {
+    throw new Error(`${label}过长（最多 ${max} 字符）`);
+  }
+  return text;
+}
+
 /** 校验范围配置：类型合法；指定集合时至少选一个集合 */
 function assertValidScope(scope: unknown): void {
   const s = scope as SkillGroup['scope'] | undefined;
@@ -82,13 +95,15 @@ function assertValidScope(scope: unknown): void {
 export class SkillGroupStore implements ISkillGroupStore {
   private groups: SkillGroup[] = [];
   private readonly path: string;
+  private readonly skillsDir: string;
   /**
    * 持久化写队列：串行化落盘（同 taskStore：并发 persist 共用临时文件会互相覆盖）。
    */
   private persistQueue: Promise<void> = Promise.resolve();
 
-  private constructor(path: string, groups: SkillGroup[]) {
+  private constructor(path: string, skillsDir: string, groups: SkillGroup[]) {
     this.path = path;
+    this.skillsDir = skillsDir;
     this.groups = groups;
   }
 
@@ -103,6 +118,8 @@ export class SkillGroupStore implements ISkillGroupStore {
     const dir = PathUtils.join(Zotero.DataDirectory.dir, DATA_DIR_NAME);
     await IOUtils.makeDirectory(dir, { ignoreExisting: true });
     const path = PathUtils.join(dir, FILE_NAME);
+    const skillsDir = PathUtils.join(dir, SKILLS_DIR_NAME);
+    await IOUtils.makeDirectory(skillsDir, { ignoreExisting: true });
 
     let data: unknown = [];
     try {
@@ -114,9 +131,19 @@ export class SkillGroupStore implements ISkillGroupStore {
     }
 
     const groups: SkillGroup[] = Array.isArray(data)
-      ? data.filter((g) => g && typeof g === 'object' && typeof g.id === 'string')
+      ? data
+          .filter((g: any) => g && typeof g === 'object' && typeof g.id === 'string')
+          .map((g: any) => ({
+            ...g,
+            description: typeof g.description === 'string' ? g.description : '',
+            referencesEnabled: g.referencesEnabled === true,
+            referencesDescription:
+              typeof g.referencesDescription === 'string'
+                ? g.referencesDescription
+                : '',
+          }))
       : [];
-    return new SkillGroupStore(path, groups);
+    return new SkillGroupStore(path, skillsDir, groups);
   }
 
   /** 数据文件完整路径（调试/测试用） */
@@ -144,7 +171,17 @@ export class SkillGroupStore implements ISkillGroupStore {
   async create(data: SkillGroupCreateData): Promise<SkillGroup> {
     // store 层校验（面板侧已有校验，这里是第二道防线，错误为中文可直接展示）
     const name = assertValidName(data.name);
+    const description = assertOptionalText(
+      data.description,
+      LIMITS.skillDescription,
+      '技能说明'
+    );
     const instruction = assertValidInstruction(data.instruction);
+    const referencesDescription = assertOptionalText(
+      data.referencesDescription,
+      LIMITS.referencesDescription,
+      '参考资料说明'
+    );
     assertValidScope(data.scope);
     const deliverable = assertValidDeliverable(data.deliverable);
 
@@ -152,7 +189,10 @@ export class SkillGroupStore implements ISkillGroupStore {
     const sg: SkillGroup = {
       id: uid(),
       name,
+      description,
       instruction,
+      referencesEnabled: data.referencesEnabled === true,
+      referencesDescription,
       enabled: true,
       archived: false,
       version: 1,
@@ -163,6 +203,9 @@ export class SkillGroupStore implements ISkillGroupStore {
       updatedAt: now,
     };
     this.groups.push(sg);
+    if (sg.referencesEnabled) {
+      await this.ensureReferencesDir(sg.id);
+    }
     await this.persist();
     return clone(sg);
   }
@@ -175,8 +218,28 @@ export class SkillGroupStore implements ISkillGroupStore {
     if (patch.name !== undefined) {
       sg.name = assertValidName(patch.name);
     }
+    if (patch.description !== undefined) {
+      sg.description = assertOptionalText(
+        patch.description,
+        LIMITS.skillDescription,
+        '技能说明'
+      );
+    }
     if (patch.instruction !== undefined) {
       sg.instruction = assertValidInstruction(patch.instruction);
+    }
+    if (patch.referencesEnabled !== undefined) {
+      sg.referencesEnabled = !!patch.referencesEnabled;
+      if (sg.referencesEnabled) {
+        await this.ensureReferencesDir(sg.id);
+      }
+    }
+    if (patch.referencesDescription !== undefined) {
+      sg.referencesDescription = assertOptionalText(
+        patch.referencesDescription,
+        LIMITS.referencesDescription,
+        '参考资料说明'
+      );
     }
     if (patch.scope !== undefined) {
       assertValidScope(patch.scope);
@@ -222,6 +285,7 @@ export class SkillGroupStore implements ISkillGroupStore {
       createdAt: now,
       updatedAt: now,
     };
+    await this.copySkillAssets(src.id, sg.id);
     this.groups.push(sg);
     await this.persist();
     return clone(sg);
@@ -245,7 +309,131 @@ export class SkillGroupStore implements ISkillGroupStore {
     }
     const idx = this.groups.indexOf(sg);
     this.groups.splice(idx, 1);
+    await IOUtils.remove(this.skillDir(id), {
+      recursive: true,
+      ignoreAbsent: true,
+    });
     await this.persist();
+  }
+
+  // ──────────── 技能文件 / references ────────────
+
+  async getAssetManifest(id: string) {
+    this.findOrThrow(id);
+    const skillDir = this.skillDir(id);
+    const skillPath = PathUtils.join(skillDir, SKILL_FILE_NAME);
+    const referencesDir = PathUtils.join(skillDir, REFERENCES_DIR_NAME);
+
+    let skillFile: SkillAssetFile | null = null;
+    if (await IOUtils.exists(skillPath)) {
+      const stat = await IOUtils.stat(skillPath);
+      skillFile = {
+        name: SKILL_FILE_NAME,
+        path: skillPath,
+        size: Number(stat.size ?? 0),
+      };
+    }
+
+    const references: SkillAssetFile[] = [];
+    if (await IOUtils.exists(referencesDir)) {
+      for (const child of await IOUtils.getChildren(referencesDir)) {
+        try {
+          const stat = await IOUtils.stat(child);
+          if (stat.type !== 'file') continue;
+          references.push({
+            name: PathUtils.filename(child),
+            path: child,
+            size: Number(stat.size ?? 0),
+          });
+        } catch {
+          // 单个损坏/消失文件不影响其余清单
+        }
+      }
+      references.sort((a, b) => a.name.localeCompare(b.name));
+    }
+
+    return { skillGroupId: id, skillDir, skillFile, referencesDir, references };
+  }
+
+  async writeSkillFile(id: string, bytes: Uint8Array): Promise<SkillAssetFile> {
+    this.findOrThrow(id);
+    if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0) {
+      throw new Error('SKILL.md 文件为空');
+    }
+    const dir = this.skillDir(id);
+    await IOUtils.makeDirectory(dir, { ignoreExisting: true });
+    const path = PathUtils.join(dir, SKILL_FILE_NAME);
+    await IOUtils.write(path, bytes);
+    return { name: SKILL_FILE_NAME, path, size: bytes.byteLength };
+  }
+
+  async writeReferenceFiles(
+    id: string,
+    files: SkillAssetUpload[]
+  ): Promise<SkillAssetFile[]> {
+    this.findOrThrow(id);
+    const dir = await this.ensureReferencesDir(id);
+    const written: SkillAssetFile[] = [];
+    for (const input of files) {
+      if (!(input?.bytes instanceof Uint8Array) || input.bytes.byteLength === 0) {
+        throw new Error(`参考文件为空：${String(input?.name ?? '')}`);
+      }
+      const name = sanitizeFileName(input.name);
+      const path = PathUtils.join(dir, name);
+      await IOUtils.write(path, input.bytes);
+      written.push({ name, path, size: input.bytes.byteLength });
+    }
+    return written;
+  }
+
+  async removeReferenceFile(id: string, name: string): Promise<void> {
+    this.findOrThrow(id);
+    const safe = sanitizeFileName(name);
+    const path = PathUtils.join(this.skillDir(id), REFERENCES_DIR_NAME, safe);
+    await IOUtils.remove(path, { ignoreAbsent: true });
+  }
+
+  private skillDir(id: string): string {
+    return PathUtils.join(this.skillsDir, id);
+  }
+
+  private async ensureReferencesDir(id: string): Promise<string> {
+    const skillDir = this.skillDir(id);
+    await IOUtils.makeDirectory(skillDir, { ignoreExisting: true });
+    const referencesDir = PathUtils.join(skillDir, REFERENCES_DIR_NAME);
+    await IOUtils.makeDirectory(referencesDir, { ignoreExisting: true });
+    return referencesDir;
+  }
+
+  private async copySkillAssets(sourceId: string, targetId: string): Promise<void> {
+    const src = this.skillDir(sourceId);
+    if (!(await IOUtils.exists(src))) return;
+
+    const dest = this.skillDir(targetId);
+    await IOUtils.makeDirectory(dest, { ignoreExisting: true });
+
+    const srcSkill = PathUtils.join(src, SKILL_FILE_NAME);
+    if (await IOUtils.exists(srcSkill)) {
+      await IOUtils.copy(srcSkill, PathUtils.join(dest, SKILL_FILE_NAME));
+    }
+
+    const srcRefs = PathUtils.join(src, REFERENCES_DIR_NAME);
+    if (await IOUtils.exists(srcRefs)) {
+      const destRefs = PathUtils.join(dest, REFERENCES_DIR_NAME);
+      await IOUtils.makeDirectory(destRefs, { ignoreExisting: true });
+      for (const child of await IOUtils.getChildren(srcRefs)) {
+        try {
+          const stat = await IOUtils.stat(child);
+          if (stat.type !== 'file') continue;
+          await IOUtils.copy(
+            child,
+            PathUtils.join(destRefs, PathUtils.filename(child))
+          );
+        } catch {
+          // 单个参考文件复制失败不阻止技能组副本创建
+        }
+      }
+    }
   }
 
   // ──────────── 范围判定（FR-02） ────────────
