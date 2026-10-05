@@ -75,21 +75,22 @@ async function copyText(text: string): Promise<boolean> {
 function refreshMcpStatus(): void {
   const api = getAPI();
   const addrEl = $('st-mcp-addr');
+  const portEl = $('st-mcp-port-value');
   const enableEl = $('st-mcp-enabled') as HTMLInputElement | null;
   if (!api?.mcp) {
     if (addrEl) addrEl.textContent = '—';
+    if (portEl) portEl.textContent = '—';
     return;
   }
   try {
     const st = api.mcp.getStatus();
-    if (addrEl) {
-      addrEl.textContent =
-        st && st.port ? `http://127.0.0.1:${st.port}/skilltask/mcp` : '—';
-    }
+    if (addrEl) addrEl.textContent = st?.url ?? '—';
+    if (portEl) portEl.textContent = st?.port ? String(st.port) : '—';
     // XUL checkbox 用 checked 属性；原生 preference 绑定未使用（启停需调 register/unregister）
     if (enableEl) (enableEl as any).checked = !!st?.enabled;
   } catch {
     if (addrEl) addrEl.textContent = '—';
+    if (portEl) portEl.textContent = '—';
   }
 }
 
@@ -155,33 +156,6 @@ function init(): void {
           const ok = await copyText(addr);
           if (!ok) showError(getString('prefs-token-copy-fail'));
         }
-      } catch (e: any) {
-        showError(getString('prefs-save-fail', { error: errMsg(e) }));
-      }
-    });
-  }
-
-  // ── 端口：读写 Zotero 的 httpServer.port（修改后需重启生效） ──
-  const portInput = $('st-mcp-port') as HTMLInputElement | null;
-  if (portInput) {
-    try {
-      const curPort = (Zotero as any).Prefs.get('httpServer.port', true);
-      if (typeof curPort === 'number' && curPort > 0) {
-        portInput.value = String(curPort);
-      }
-    } catch {
-      // ignore
-    }
-    portInput.addEventListener('change', () => {
-      clearError();
-      const v = parseInt(portInput.value, 10);
-      if (!Number.isInteger(v) || v < 1 || v > 65535) {
-        showError(getString('prefs-port-invalid'));
-        return;
-      }
-      try {
-        (Zotero as any).Prefs.set('httpServer.port', v, true);
-        refreshMcpStatus();
       } catch (e: any) {
         showError(getString('prefs-save-fail', { error: errMsg(e) }));
       }
