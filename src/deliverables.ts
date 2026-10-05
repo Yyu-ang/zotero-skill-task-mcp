@@ -79,6 +79,9 @@ export function assertValidDeliverable(input: unknown): SkillDeliverable {
       if (!Number.isInteger(fd.maxBytes) || fd.maxBytes <= 0) {
         throw new Error('交付物配置无效：maxBytes 须为正整数');
       }
+      if (fd.maxBytes > LIMITS.deliverableFileBytesMax) {
+        throw new Error('交付物配置无效：单文件上限不能超过 200MB');
+      }
       out.maxBytes = fd.maxBytes;
     }
     return out;
@@ -119,9 +122,9 @@ export function resolveMaxBytes(d: FileDeliverable): number {
     Number.isInteger(d.maxBytes) &&
     d.maxBytes > 0
   ) {
-    return d.maxBytes;
+    return Math.min(d.maxBytes, LIMITS.deliverableFileBytesMax);
   }
-  return getDeliverableMaxBytes();
+  return Math.min(getDeliverableMaxBytes(), LIMITS.deliverableFileBytesMax);
 }
 
 /** 解析文件交付物的实际扩展名白名单（小写） */
