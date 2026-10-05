@@ -947,11 +947,41 @@ export class McpServer implements IMcpServer {
     }
   }
 
-  private jsonOk(id: unknown, result: unknown): [number, string, string] {
+  private serverInfoMeta(): Record<string, unknown> {
+    return {
+      [SERVER_INFO_META_KEY]: {
+        name: 'zotero-skill-task-mcp',
+        version: this.version,
+      },
+    };
+  }
+
+  private jsonOk(
+    id: unknown,
+    result: unknown,
+    modern = false
+  ): [number, string, string] {
+    let wireResult = result;
+    if (modern) {
+      const base =
+        result && typeof result === 'object' && !Array.isArray(result)
+          ? (result as Record<string, unknown>)
+          : { value: result };
+      wireResult = {
+        ...base,
+        resultType: 'complete',
+        _meta: {
+          ...(base._meta && typeof base._meta === 'object'
+            ? (base._meta as Record<string, unknown>)
+            : {}),
+          ...this.serverInfoMeta(),
+        },
+      };
+    }
     return [
       200,
       'application/json',
-      JSON.stringify({ jsonrpc: '2.0', id, result }),
+      JSON.stringify({ jsonrpc: '2.0', id, result: wireResult }),
     ];
   }
 
@@ -960,24 +990,49 @@ export class McpServer implements IMcpServer {
     code: number,
     message: string
   ): [number, string, string] {
+    return this.jsonErrStatus(id, 200, code, message);
+  }
+
+  private jsonErrStatus(
+    id: unknown,
+    status: number,
+    code: number,
+    message: string,
+    data?: unknown
+  ): [number, string, string] {
     return [
-      200,
+      status,
       'application/json',
-      JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }),
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id,
+        error: {
+          code,
+          message,
+          ...(data === undefined ? {} : { data }),
+        },
+      }),
     ];
   }
 
   /**
-   * tools/call 成功响应：业务错误（如空队列、提交校验失败）放在结果 JSON 里返回，
-   * 而不是 JSON-RPC 错误，保证 MCP 客户端总能拿到结构化的业务结果。
+   * tools/call 成功响应：
+   * - legacy：保留 content[].text 的旧行为；
+   * - 2026：额外提供 structuredContent，并由 jsonOk 加 resultType/serverInfo。
    */
   private toolOk(
     id: unknown,
-    result: unknown
+    result: unknown,
+    modern: boolean
   ): [number, string, string] {
-    return this.jsonOk(id, {
-      content: [{ type: 'text', text: JSON.stringify(result) }],
-    });
+    return this.jsonOk(
+      id,
+      {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        ...(modern ? { structuredContent: result } : {}),
+      },
+      modern
+    );
   }
 
   // ──────────── skill injection ────────────
