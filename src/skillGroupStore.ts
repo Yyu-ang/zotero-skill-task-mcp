@@ -220,6 +220,7 @@ export class SkillGroupStore implements ISkillGroupStore {
       updatedAt: now,
     };
     this.groups.push(sg);
+    await IOUtils.makeDirectory(this.skillDir(sg.id), { ignoreExisting: true });
     if (sg.referencesEnabled) {
       await this.ensureReferencesDir(sg.id);
     }
