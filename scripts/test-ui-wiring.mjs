@@ -23,6 +23,8 @@ const coreTs = read('src/core.ts');
 const mcpTs = read('src/mcpServer.ts');
 const addonPrefs = read('addon/prefs.js');
 const utilsTs = read('src/utils.ts');
+const panelTs = read('src/panel.ts');
+const skillStoreTs = read('src/skillGroupStore.ts');
 
 const includeSrc = 'chrome://zotero/content/include.js';
 const panelScript = 'src="panel.js"';
@@ -135,6 +137,36 @@ assert.ok(
     !prefsXhtml.includes('max="200"') &&
     !mcpTs.includes('maximum: 209715200'),
   '200 MB is a default, not a hard cap'
+);
+
+assert.ok(
+  panelTs.includes("bindFileDropZone(skillDrop, skillInput") &&
+    panelTs.includes("bindFileDropZone(refsDrop, refsInput") &&
+    panelTs.includes("getAssetManifest(editing.id)") &&
+    panelTs.includes("writeSkillFile(") &&
+    panelTs.includes("writeReferenceFiles("),
+  'skill editor must support drag/click SKILL.md and references uploads'
+);
+assert.ok(
+  panelTs.includes("referencesEnabled: refsEnabled.checked") &&
+    panelTs.includes("referencesDescription: refsDesc.value.trim()"),
+  'skill editor must persist references enablement and description'
+);
+assert.ok(
+  skillStoreTs.includes("const SKILL_FILE_NAME = 'SKILL.md'") &&
+    skillStoreTs.includes("const REFERENCES_DIR_NAME = 'references'") &&
+    skillStoreTs.includes('getAssetManifest(id: string)') &&
+    skillStoreTs.includes('writeSkillFile(id: string') &&
+    skillStoreTs.includes('writeReferenceFiles(') &&
+    skillStoreTs.includes('copySkillAssets(src.id, sg.id)'),
+  'skill assets must be persisted in per-skill SKILL.md/references directories'
+);
+assert.ok(
+  mcpTs.includes('skillMarkdown') &&
+    mcpTs.includes('referenceFiles') &&
+    mcpTs.includes('skillAssets') &&
+    mcpTs.includes('skillAssets.references = []'),
+  'MCP injection/claim must support skill assets and respect disabled references'
 );
 
 for (const required of [
