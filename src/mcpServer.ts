@@ -40,6 +40,10 @@ import { prefs, getLeaseMs } from './prefs';
 import { LIMITS, error as logError, log, truncateForDisplay } from './utils';
 import { traced } from './utils/trace';
 import {
+  eraseAttachments,
+  findChildAttachmentsByFilename,
+} from './attachments';
+import {
   DELIVERABLES_DIR_NAME,
   base64ToBytes,
   normalizeDeliverable,
@@ -627,6 +631,16 @@ export class McpServer implements IMcpServer {
                               type: 'integer',
                               minimum: 1,
                             },
+                            targetFileName: {
+                              type: 'string',
+                              description: '可选：限定最终交付文件名（含扩展名）。',
+                            },
+                            existingAttachmentPolicy: {
+                              type: 'string',
+                              enum: ['overwrite', 'skip'],
+                              description:
+                                '自动挂附件且同名附件存在时：overwrite 覆盖，skip 跳过并视为完成。',
+                            },
                           },
                           required: ['type'],
                         },
@@ -636,6 +650,14 @@ export class McpServer implements IMcpServer {
                             type: { type: 'string', const: 'markdown' },
                             target: { type: 'string', enum: ['note', 'file'] },
                             attachToItem: { type: 'boolean' },
+                            targetFileName: {
+                              type: 'string',
+                              description: 'target=file 时可限定最终 .md 文件名。',
+                            },
+                            existingAttachmentPolicy: {
+                              type: 'string',
+                              enum: ['overwrite', 'skip'],
+                            },
                           },
                           required: ['type', 'target'],
                         },
@@ -655,8 +677,8 @@ export class McpServer implements IMcpServer {
                   '提交任务结果。按领取时返回的 deliverable schema 选择参数：' +
                   'note → noteHtml（HTML，脚本/事件属性会被清理）；' +
                   'markdown → markdown（文本）；' +
-                  'file → fileName + contentBase64（base64 文件内容，存入受控目录，' +
-                  '可按技能组配置自动挂成条目附件）。' +
+                  'file → contentBase64（若技能未限定目标文件名则另传 fileName；' +
+                  '文件存入受控目录，可按技能组配置自动挂成条目附件）。' +
                   '成功后任务标记为完成；重复提交同一任务幂等返回，' +
                   '不会产生第二条笔记/第二个文件。',
                 inputSchema: {
@@ -1239,7 +1261,36 @@ export class McpServer implements IMcpServer {
         : deliverable.type === 'markdown' &&
           deliverable.target === 'file' &&
           !!deliverable.attachToItem;
+    const policy =
+      deliverable.type === 'file'
+        ? deliverable.existingAttachmentPolicy ?? 'skip'
+        : deliverable.type === 'markdown' && deliverable.target === 'file'
+          ? deliverable.existingAttachmentPolicy ?? 'skip'
+          : 'skip';
     try {
+      const existing = attach
+        ? await findChildAttachmentsByFilename(parent, fileName)
+        : [];
+
+      // 竞态保护：扫描后到提交前若已有同名附件，skip 仍应幂等完成。
+      if (attach && existing.length && policy === 'skip') {
+        const existingKey =
+          typeof existing[0]?.key === 'string' ? existing[0].key : null;
+        await this.tasks.complete(task.id, {
+          noteKey: null,
+          deliverableType: dtype,
+          deliverableRef: fileName,
+          attachmentKey: existingKey,
+        });
+        return {
+          ok: true,
+          fileName,
+          attachmentKey: existingKey ?? undefined,
+          deliverableType: dtype,
+          duplicate: true,
+        };
+      }
+
       const { dir, dest, rel } = this.deliverablePaths(task.id, fileName);
       await this.writeBytes(dir, dest, bytes);
       log(
@@ -1251,6 +1302,11 @@ export class McpServer implements IMcpServer {
       let attachmentKey: string | null = null;
       if (attach) {
         attachmentKey = await this.attachFileToParent(parent, dest);
+        if (existing.length && policy === 'overwrite') {
+          await eraseAttachments(
+            existing.filter((att: any) => att?.key !== attachmentKey)
+          );
+        }
       }
       await this.tasks.complete(task.id, {
         noteKey: null,
