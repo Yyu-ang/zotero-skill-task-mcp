@@ -2,7 +2,7 @@
  * src/ui.ts — UI 管理
  *
  * 使用 Zotero 8+ 官方 MenuManager API 在“工具”菜单注册入口，
- * 点击打开占位管理面板（addon/content/panel.xhtml）。
+ * 点击打开管理面板（addon/content/panel.html）。
  *
  * 约束：只用官方 API；禁用 Bluebird / Cu.import /
  * zotero-plugin-toolkit 的 Menu.register 等已废弃写法。
