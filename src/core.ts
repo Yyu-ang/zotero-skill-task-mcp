@@ -32,9 +32,6 @@ export class PluginCore {
   private initialized: boolean = false;
   private menuID: string | null = null;
   private windowListener: any = null;
-  /** 设置面板 ID（PreferencePanes.register 返回） */
-  private prefPaneID: string | null = null;
-
   /** MVP 业务模块（startup 时组装，面板经 Zotero.SkillTask 访问） */
   private api: SkillTaskAPI | null = null;
   /** 租约过期释放定时器（5 分钟） */
@@ -140,28 +137,7 @@ export class PluginCore {
     // 在此补调一次（bootstrap 那次 early-return，无害）。
     this.addToAllWindows();
 
-    // 注册插件设置面板（Zotero 8+ PreferencePanes 官方 API）
-    // 参照 Green Frog 模式：image（设置窗口左侧栏图标）+ defaultXUL（原生 XUL 默认样式）；
-    // src 用 rootURI（已验证可工作）。设置项在编辑 → 设置 → 左侧"技能任务"。
-    try {
-      const PP = (Zotero as any).PreferencePanes;
-      if (PP && typeof PP.register === 'function') {
-        const locale = String((Zotero as any).locale || '');
-        this.prefPaneID = await PP.register({
-          pluginID: this.id,
-          src: 'chrome://zotero-skill-task/content/preferences.xhtml',
-          label: locale.toLowerCase().startsWith('zh') ? '技能任务' : 'Skill Task',
-          image: 'chrome://zotero-skill-task/content/icons/icon-48.png',
-          defaultXUL: true,
-          scripts: ['chrome://zotero-skill-task/content/preferences.js'],
-        });
-        log(`Preference pane registered: ${this.prefPaneID}`);
-      } else {
-        log('PreferencePanes API not available, settings pane skipped');
-      }
-    } catch (e) {
-      log(`Preference pane registration failed: ${e}`);
-    }
+    // 设置已合并到插件主面板，不再注册独立 Zotero Preference Pane。
 
     log('Skill Task initialized successfully');
 
@@ -296,16 +272,6 @@ export class PluginCore {
     unregisterToolsMenu(this.menuID);
     this.menuID = null;
 
-    // 注销设置面板（Zotero 也会在插件 shutdown 时自动注销，显式调用更稳妥）
-    if (this.prefPaneID) {
-      try {
-        (Zotero as any).PreferencePanes?.unregister?.(this.prefPaneID);
-      } catch {
-        // ignore
-      }
-      this.prefPaneID = null;
-    }
-
     // 移除所有主窗口的快捷键监听（防泄漏）
     detachAllPanelShortcuts();
 
@@ -390,8 +356,8 @@ export class PluginCore {
    * 任一不可用直接跳过，不硬编码假设——兼容 Zotero 9+。
    *
    * 注意：不等待 uiReadyPromise。它在主窗口条目视图加载完成后才 resolve，
-   * 而插件 startup（含菜单/设置页注册）不应依赖 UI 就绪；实测发现某些环境下
-   * uiReadyPromise 迟迟不 resolve，会导致整个 startup 卡死、菜单和设置页
+   * 而插件 startup（含菜单与业务模块注册）不应依赖 UI 就绪；实测发现某些环境下
+   * uiReadyPromise 迟迟不 resolve，会导致整个 startup 卡死、菜单和主面板
    * 无法注册。为保险起见，等待还设有超时兜底，超时后降级继续启动。
    */
   private async waitForZoteroReady(): Promise<void> {

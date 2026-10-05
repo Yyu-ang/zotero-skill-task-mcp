@@ -301,6 +301,35 @@
       display: flex; align-items: flex-start; gap: 8px;
     }
 
+    /* ── 设置 ── */
+    .settings-grid {
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .settings-row {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 14px; padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .settings-row:last-child { border-bottom: none; }
+    .settings-main { flex: 1; min-width: 0; }
+    .settings-label { font-weight: 600; font-size: 13px; }
+    .settings-desc { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .settings-control {
+      width: 150px; flex: none; font: inherit; font-size: 13px;
+      padding: 6px 9px; border: 1px solid var(--border);
+      border-radius: 6px; background: var(--input-bg); color: var(--text);
+    }
+    .settings-control.short-key { width: 64px; text-transform: uppercase; text-align: center; }
+    .settings-warning {
+      margin-top: 8px; padding: 8px 10px; border-radius: 6px;
+      background: var(--warn-soft); color: var(--warn); font-size: 12px;
+    }
+    @media (max-width: 680px) {
+      .settings-grid { grid-template-columns: 1fr; }
+      .settings-row { align-items: flex-start; }
+    }
+
     /* ── 全局错误提示（图标+文案+关闭；role=alert） ── */
     #error-box {
       display: flex; align-items: flex-start; gap: 10px;
@@ -539,11 +568,13 @@
       <button class="tabbtn active" id="tabbtn-skills" data-tab="skills"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>技能组</button>
       <button class="tabbtn" id="tabbtn-tasks" data-tab="tasks"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>任务</button>
       <button class="tabbtn" id="tabbtn-mcp" data-tab="mcp"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>MCP 服务</button>
+      <button class="tabbtn" id="tabbtn-settings" data-tab="settings"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.4 1.08V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 8.6 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1.08-.4H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 8.6a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-.6 1.65 1.65 0 0 0 .4-1.08V3a2 2 0 1 1 4 0v.09A1.65 1.65 0 0 0 15.4 4.6a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.14.36.21.74.21 1.12s-.07.76-.21 1.12Z"/></svg>设置</button>
     </nav>
     <main>
       <section id="tab-skills" class="tabpanel"></section>
       <section id="tab-tasks" class="tabpanel" hidden="hidden"></section>
       <section id="tab-mcp" class="tabpanel" hidden="hidden"></section>
+      <section id="tab-settings" class="tabpanel" hidden="hidden"></section>
     </main>
   </div>
 

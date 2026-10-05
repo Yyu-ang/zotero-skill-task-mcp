@@ -1,92 +1,206 @@
-# Zotero Skill Task MCP（插件）
+# Zotero Skill Task MCP
 
-Zotero 桌面端插件：用户在 Zotero 内维护“技能组”（AI 任务模板：技能说明、任务指令、SKILL.md、可选 references/、范围、输入材料、交付物定义），
-每个技能拥有独立目录 `skilltask/skills/<技能ID>/`；插件按范围扫描文献生成可持久化任务；外部 AI 通过 MCP HTTP 接口可注入技能组/技能文件、被动单条领取任务（租约防并发），
-并提交交付物，由插件校验后写回 Zotero 条目笔记/文件并更新任务状态。
+一个把 **Zotero 文献变成可被 AI 领取的任务队列** 的桌面插件。
 
-插件不内置 AI、不推送任务。需求基线见 [`需求计划书.md`](./需求计划书.md)。
+你可以在 Zotero 里定义“技能组”，指定哪些文献需要处理、AI 可以读取哪些材料、最终要交付什么。外部 AI 通过 MCP 领取任务，完成后把结果交回插件，插件再把笔记或文件写回对应 Zotero 条目。
 
-> MCP 默认启用，访问凭据默认关闭；默认单文件交付上限为 200MB，可由用户自行调高。
+## 能做什么
 
-### MCP 协议兼容
+- 在 Zotero 内创建和管理多个技能组
+- 为技能上传 `SKILL.md`
+- 可选建立 `references/` 并上传参考文件
+- 按全库或指定集合扫描文献并生成任务
+- 支持元数据、摘要、笔记、本地 PDF 等输入材料
+- 支持 Zotero 笔记、Markdown 文件、普通文件等交付物
+- 文件交付可限定固定文件名
+- 同名附件可选择“跳过并视为完成”或“覆盖旧附件”
+- 任务支持待领取、已领取、等待材料、失败、取消、完成等状态
+- 外部 AI 通过 MCP 单条领取和提交任务
+- MCP 可直接向插件注入新的技能组和技能文件
 
-同一 `/skilltask/mcp` HTTP 端点双栈支持：
-
-- **MCP 2026-07-28**：无状态 `server/discover → tools/list/tools/call`；每个 request 使用 `params._meta` 协议 envelope，并校验 `MCP-Protocol-Version`、`Mcp-Method`，`tools/call` 额外校验 `Mcp-Name`。现代响应带 `resultType: "complete"`、serverInfo meta；`tools/list` 带 `ttlMs/cacheScope`；工具调用同时返回 `content` 和 `structuredContent`。
-- **MCP legacy handshake**：`initialize` 会按客户端请求协商 `2025-11-25 / 2025-06-18 / 2025-03-26 / 2024-11-05`，而不是固定返回最新版；其余 `ping / tools/list / tools/call` 行为保持兼容。
-
-现代客户端优先使用 2026-07-28；旧客户端无需修改即可继续使用 2025-11-25。
-
-## 版本要求
-
-- Zotero **9.0** 及以上（`strict_min_version: "9.0"`，`strict_max_version: "10.*"`）
-- 构建需要 Node.js 18+
-
-## 构建
-
-```bash
-npm install      # 安装构建依赖（仅 devDependencies）
-npm run typecheck  # TypeScript 类型检查
-npm run build      # 构建 → dist/zotero-skill-task-mcp-<版本>.xpi
-npm run release    # 构建 + 生成 update.json（供插件自动更新）
-```
-
-## 开发调试（对标 cookjohn/zotero-mcp 的 `npm run start`）
-
-```bash
-# 开发模式：源码代理安装 + 文件监听 + 热重载
-npm run dev   # 或 npm start
-```
-
-流程：
-1. dev 构建（产物写入 `addon/content/*.js`，含 sourcemap）
-2. 在开发 profile（默认 `~/.zotero-dev/<plugin-id>`）的 `extensions/` 下写代理文件，
-   Zotero 直接从 `addon/` 源码加载插件，无需打包 XPI
-3. 启动 Zotero（带 `-purgecaches -ZoteroDebugText -jsconsole`，报错直接可见）
-4. 监听 `src/`、`addon/` 变化 → 自动重建 → 插件约 1 秒内热重载（`AddonManager.reload()`），无需重启 Zotero
-
-首次运行需在 Zotero 的「工具 → 插件」里手动启用一次（侧载默认禁用），之后保持启用。
-
-可选参数：
-```bash
-node scripts/serve.mjs --profile <dir>   # 指定开发 profile 目录
-node scripts/serve.mjs --zotero <bin>    # 指定 Zotero 可执行文件路径
-node scripts/serve.mjs --no-launch      # 只监听重建，不启动 Zotero
-# 环境变量 ZOTERO_BIN / ZOTERO_PROFILE 同样有效
-```
-
-调试日志：在 Zotero 里「帮助 → Debug Output Logging → View Output」，搜 `[SkillTask]`。
+插件**不内置 AI，也不会主动启动 AI**。AI 只有在主动调用 MCP 时才会领取任务。
 
 ## 安装
 
-1. `npm run build` 得到 `dist/*.xpi`
-2. Zotero → 工具 → 插件，把 `.xpi` 拖进插件管理器对话框
-3. 重启 Zotero，"工具"菜单出现"技能任务…"入口
+要求：
 
-## 工程结构
+- Zotero 9 或 10
 
+安装步骤：
+
+1. 打开本仓库的 **Releases**
+2. 下载最新的 `.xpi`
+3. Zotero → **工具 → 插件**
+4. 把 `.xpi` 拖入插件管理器并安装
+5. 重启 Zotero
+6. Zotero → **工具 → 技能任务…**
+
+## 最简单的使用流程
+
+### 1. 新建技能
+
+打开“技能任务”后进入 **技能组**：
+
+1. 点击新增技能
+2. 填写名称和技能说明
+3. 上传 `SKILL.md`
+4. 如有额外资料，启用 `references/` 并上传参考文件
+5. 选择任务范围：
+   - 全库
+   - 指定 Zotero 集合
+6. 选择 AI 可以读取的材料
+7. 设置交付物
+8. 保存并启用技能
+
+上传 `SKILL.md` 后，插件会自动尝试读取 YAML front matter 中的：
+
+```yaml
+---
+name: example-skill
+description: 这个技能用来……
+---
 ```
-addon/
-  manifest.json        插件清单（addonID: zotero-skill-task@example.com）
-  bootstrap.js         Zotero 生命周期入口（仅转发事件，无业务逻辑）
-  prefs.js             默认偏好
-  locale/en-US|zh-CN  Fluent 本地化（菜单标签等）
-  content/panel.html   技能组/任务/MCP 管理面板
-src/
-  index.ts  打包入口（暴露 PluginHook）
-  core.ts   生命周期 + 窗口管理
-  ui.ts     工具菜单注册（Zotero 8+ MenuManager）+ 面板打开
-  prefs.ts  偏好封装
-  utils.ts  日志
-scripts/
-  build.mjs    esbuild 打包 → XPI
-  release.mjs  发布：哈希 + update.json（可选 --publish 发 GitHub Release）
+
+并自动回填技能名称和技能说明。
+
+### 2. 生成任务
+
+技能启用后可以重新扫描文献。
+
+插件会根据技能范围和材料要求创建任务。例如技能要求 PDF，而某篇文献还没有本地 PDF，则任务会进入“等待材料”。
+
+### 3. AI 领取任务
+
+外部 AI 通过 MCP 调用：
+
+- `skilltask_claim`：领取下一条任务
+- `skilltask_submit`：提交结果
+- `skilltask_inject_skill`：向插件新增技能
+
+每次领取最多返回一条任务，避免多个 AI 同时处理同一条任务。
+
+### 4. 查看结果
+
+在 **任务** 模块可以看到各任务状态。
+
+展开任务后可以查看：
+
+- Zotero 条目标题
+- 条目 Key
+- 技能和版本
+- 输入材料
+- 交付物
+- 创建 / 领取 / 完成时间
+
+点击 **在库中查看** 可以直接跳回 Zotero 并选中对应文献。
+
+## 交付物
+
+目前主要支持：
+
+### Zotero 笔记
+
+AI 返回内容后，插件在对应父条目下创建笔记。
+
+### Markdown / 普通文件
+
+可以保存到插件受控目录，也可以自动挂成 Zotero 附件。
+
+还可以指定固定文件名，例如：
+
+```text
+summary.md
+review.pdf
+result.json
 ```
 
-## 脚手架说明
+如果 Zotero 条目已经有同名附件，可以选择：
 
-基于 `tsingke/zotero-plugin-dev-template`（支持 Zotero 7–10 的现代模板）裁剪：
-已验证其 manifest 声明覆盖 9/10、构建链仅 esbuild+TypeScript+zotero-types、
-示例代码只用官方 API（`Zotero.MenuManager`、原生 Promise、Fluent），
-无 `windingwind/zotero-plugin-template` 的旧 toolkit/Cu.import/Bluebird 包袱。
-本仓库只保留最小可运行部分：工具菜单入口 + 占位面板；模板的示例列/通知观察者等已删去。
+- **跳过，并标记任务已完成**
+- **覆盖旧附件**
+
+## MCP
+
+在插件的 **MCP 服务** 模块可以：
+
+- 启用 / 关闭 MCP
+- 查看 MCP 地址和端口
+- 复制服务地址
+- 启用 / 关闭访问凭据
+- 查看、复制和重新生成访问凭据
+
+默认只监听本机：
+
+```text
+127.0.0.1
+```
+
+当前同时兼容：
+
+- MCP 2026-07-28
+- MCP 2025-11-25
+- MCP 2025-06-18
+- MCP 2025-03-26
+- MCP 2024-11-05
+
+旧版客户端通过 `initialize` 协商协议版本；新版客户端可使用 2026-07-28 的无状态协议。
+
+## 设置
+
+插件主页面中的 **设置** 模块包含：
+
+- 任务领取租约时长
+- 默认文件交付大小上限
+- 面板快捷键开关
+- macOS 快捷键
+- Windows / Linux 快捷键
+
+设置修改后立即生效，无需重启 Zotero。
+
+默认快捷键：
+
+- Windows / Linux：`Ctrl+Shift+J`
+- macOS：`⌘+Shift+J`
+
+## 数据存在哪里
+
+技能文件：
+
+```text
+<Zotero 数据目录>/skilltask/skills/<技能ID>/SKILL.md
+<Zotero 数据目录>/skilltask/skills/<技能ID>/references/
+```
+
+文件交付物：
+
+```text
+<Zotero 数据目录>/skilltask/deliverables/<任务ID>/
+```
+
+任务和技能状态同样保存在 Zotero 数据目录下，重启插件后可以恢复。
+
+## 开发
+
+```bash
+npm install
+npm run typecheck
+npm test
+npm run build
+```
+
+开发模式：
+
+```bash
+npm run dev
+```
+
+构建后的 XPI 位于：
+
+```text
+dist/
+```
+
+更详细的需求和技术设计见：
+
+- `需求计划书.md`
+- `docs/TECH_VALIDATION_MCP_HTTP.md`

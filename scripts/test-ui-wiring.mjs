@@ -16,8 +16,6 @@ const read = (path) => readFileSync(resolve(ROOT, path), 'utf8');
 
 const bootstrap = read('addon/bootstrap.js');
 const panel = read('addon/content/panel.html');
-const prefsXhtml = read('addon/content/preferences.xhtml');
-const prefsTs = read('src/preferences.ts');
 const uiTs = read('src/ui.ts');
 const coreTs = read('src/core.ts');
 const mcpTs = read('src/mcpServer.ts');
@@ -67,30 +65,27 @@ assert.ok(
   'bootstrap must register a stable chrome:// content package'
 );
 assert.ok(
-  coreTs.includes("src: 'chrome://zotero-skill-task/content/preferences.xhtml'") &&
-    coreTs.includes("scripts: ['chrome://zotero-skill-task/content/preferences.js']"),
-  'PreferencePane resources must load through chrome:// URLs'
+  panel.includes('id="tabbtn-settings"') &&
+    panel.includes('id="tab-settings"') &&
+    panelTs.includes("type TabId = 'skills' | 'tasks' | 'mcp' | 'settings'") &&
+    panelTs.includes('function renderSettings()') &&
+    panelTs.includes('PREFS.TASK_LEASE_MINUTES') &&
+    panelTs.includes('PREFS.DELIVERABLE_MAX_FILE_MB') &&
+    panelTs.includes('PREFS.SHORTCUT_ENABLED'),
+  'task defaults and shortcut settings must live in the main plugin panel'
+);
+assert.ok(
+  !coreTs.includes('PreferencePanes') &&
+    !coreTs.includes('preferences.xhtml') &&
+    !coreTs.includes('preferences.js'),
+  'standalone Zotero Preference Pane must not be registered after settings are merged'
+);
+assert.ok(
+  panelTs.includes('mcp.setTokenEnabled(tokenToggle.checked)') &&
+    panelTs.includes("panel-mcp-token-switch"),
+  'MCP access-token setting must be available in the MCP module'
 );
 
-assert.match(
-  prefsXhtml,
-  /<vbox\b[^>]*\bid="zotero-prefpane-skill-task"[^>]*\bonload="[^"]*ZoteroSkillTaskPreferences\.init\(\)/s,
-  'preference pane root must initialize through its own onload lifecycle'
-);
-assert.ok(
-  prefsTs.includes('(window as any).ZoteroSkillTaskPreferences = { init };'),
-  'preferences script must expose its initializer on the pane window'
-);
-assert.ok(
-  !prefsTs.includes("document.addEventListener('DOMContentLoaded', init)"),
-  'preference pane must not depend on the parent Preferences DOMContentLoaded event'
-);
-
-assert.ok(
-  !prefsTs.includes("Prefs.get('httpServer.port', true)") &&
-    !prefsTs.includes("Prefs.set('httpServer.port', v, true)"),
-  'preferences must not treat Zotero built-in httpServer.port as a global plugin pref'
-);
 assert.ok(
   mcpTs.includes('Z?.Server?.port') &&
     mcpTs.includes("Z?.Prefs?.get?.('httpServer.port')") &&
