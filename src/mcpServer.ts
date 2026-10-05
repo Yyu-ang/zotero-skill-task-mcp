@@ -927,6 +927,9 @@ export class McpServer implements IMcpServer {
       }
       const materials = await this.buildMaterialPackage(sg, task.itemKey);
       const skillAssets = await this.skillGroups.getAssetManifest(sg.id);
+      if (sg.referencesEnabled !== true) {
+        skillAssets.references = [];
+      }
       return {
         task: {
           id: task.id,
