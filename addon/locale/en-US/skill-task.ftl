@@ -258,7 +258,6 @@ prefs-token-copy-fail = Auto-copy failed. Please copy the token from the input b
 prefs-regen-confirm = Regenerate the access token? The old token will stop working immediately.
 prefs-regen-done = New token generated; the old one is now invalid
 prefs-save-fail = Save failed: {error}
-prefs-port-invalid = Port must be an integer between 1 and 65535.
 prefs-shortcut-invalid = Shortcut key must be a single letter or digit (A-Z / 0-9).
 prefs-shortcut-conflict-warn = This key conflicts with an existing Zotero shortcut (Ctrl/⌘+Shift+{key}); the panel shortcut may not fire.
 panel-doc-title = Skill Task
