@@ -45,10 +45,14 @@ describe('assertValidDeliverable', () => {
       attachToItem: true,
       allowedExtensions: ['PDF', '.Md'],
       maxBytes: 10 * 1048576,
+      targetFileName: 'result.PDF',
+      existingAttachmentPolicy: 'skip',
     });
     assert.deepEqual(d.allowedExtensions, ['pdf', 'md']);
     assert.equal(d.attachToItem, true);
     assert.equal(d.maxBytes, 10 * 1048576);
+    assert.equal(d.targetFileName, 'result.PDF');
+    assert.equal(d.existingAttachmentPolicy, 'skip');
   });
   test('file 空扩展名数组抛错', () => {
     assert.throws(() => D.assertValidDeliverable({ type: 'file', allowedExtensions: [] }), /非空数组/);
@@ -63,13 +67,40 @@ describe('assertValidDeliverable', () => {
     const d = D.assertValidDeliverable({ type: 'file', maxBytes: 300 * 1048576 });
     assert.equal(d.maxBytes, 300 * 1048576);
   });
+  test('file 目标名称与同名附件策略校验', () => {
+    assert.throws(
+      () =>
+        D.assertValidDeliverable({
+          type: 'file',
+          allowedExtensions: ['pdf'],
+          targetFileName: 'result.txt',
+        }),
+      /目标文件扩展名/
+    );
+    assert.throws(
+      () =>
+        D.assertValidDeliverable({
+          type: 'file',
+          existingAttachmentPolicy: 'rename',
+        }),
+      /overwrite 或 skip/
+    );
+  });
   test('markdown target=note/file 通过', () => {
     assert.deepEqual(
       D.assertValidDeliverable({ type: 'markdown', target: 'note' }),
       { type: 'markdown', target: 'note' }
     );
-    const d = D.assertValidDeliverable({ type: 'markdown', target: 'file', attachToItem: true });
+    const d = D.assertValidDeliverable({
+      type: 'markdown',
+      target: 'file',
+      attachToItem: true,
+      targetFileName: 'summary.md',
+      existingAttachmentPolicy: 'overwrite',
+    });
     assert.equal(d.attachToItem, true);
+    assert.equal(d.targetFileName, 'summary.md');
+    assert.equal(d.existingAttachmentPolicy, 'overwrite');
   });
   test('markdown 非法 target 抛错', () => {
     assert.throws(() => D.assertValidDeliverable({ type: 'markdown', target: 'x' }), /target/);
@@ -195,6 +226,16 @@ describe('validateSubmitParams', () => {
     assert.equal(r.fileName, 'a.pdf');
     assert.equal(r.bytes.length, 10);
   });
+  test('file 配置目标名称后无需客户端再传 fileName', () => {
+    const r = D.validateSubmitParams(
+      { type: 'file', targetFileName: 'fixed.pdf', maxBytes: 20 },
+      { contentBase64: b64('hello') },
+      't1'
+    );
+    assert.equal(r.ok, true);
+    assert.equal(r.kind, 'file');
+    assert.equal(r.fileName, 'fixed.pdf');
+  });
   test('markdown 缺参数/转笔记', () => {
     assert.equal(D.validateSubmitParams(mdNote, {}, 't1').error, 'missing-markdown');
     const r = D.validateSubmitParams(mdNote, { markdown: '# 标题\n\n正文' }, 't1');
@@ -213,6 +254,13 @@ describe('validateSubmitParams', () => {
       't1'
     );
     assert.equal(r2.error, 'markdown-file-must-be-md');
+    const r3 = D.validateSubmitParams(
+      { type: 'markdown', target: 'file', targetFileName: 'fixed.md' },
+      { markdown: 'hi', fileName: 'ignored.md' },
+      't2'
+    );
+    assert.equal(r3.ok, true);
+    assert.equal(r3.fileName, 'fixed.md');
   });
 });
 
