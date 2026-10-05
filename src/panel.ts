@@ -33,9 +33,17 @@ import type {
 } from './types';
 import { deliverableLabel } from './deliverables';
 import { initLocale, getString } from './utils/locale';
+import {
+  prefs,
+  PREFS,
+  isMacPlatform,
+  normalizeShortcutKey,
+  isShortcutEnabled,
+} from './prefs';
+import { getPanelShortcutLabel, isShortcutKeyReserved } from './ui';
 
 /** 选项卡 id */
-type TabId = 'skills' | 'tasks' | 'mcp';
+type TabId = 'skills' | 'tasks' | 'mcp' | 'settings';
 
 // ────────────────────────── 图标体系（feather 风格，单一系列） ──────────────────────────
 
@@ -83,6 +91,8 @@ const ICONS: Record<string, string> = {
   'file-text':
     '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>',
   activity: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
+  settings:
+    '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.4 1.08V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 8.6 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1.08-.4H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 8.6a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-.6 1.65 1.65 0 0 0 .4-1.08V3a2 2 0 1 1 4 0v.09A1.65 1.65 0 0 0 15.4 4.6a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9"/>',
 };
 
 /** 图标 svg 字符串（cls 控制尺寸：默认 .ic 15px，徽章内用 .ic-sm 12px） */
@@ -388,8 +398,11 @@ function renderSkeleton(tab: TabId): void {
     wrap.append(card(['40%', '70%', '55%']));
   } else if (tab === 'tasks') {
     wrap.append(card(['35%', '90%', '90%', '70%']));
-  } else {
+  } else if (tab === 'mcp') {
     wrap.append(card(['30%', '60%', '75%', '50%']));
+  } else {
+    wrap.append(card(['30%', '75%', '75%']));
+    wrap.append(card(['30%', '65%', '65%']));
   }
   root.append(wrap);
 }
@@ -479,6 +492,7 @@ function applyStaticI18n(): void {
     setStaticText('tabbtn-skills', getString('panel-tab-skills'));
     setStaticText('tabbtn-tasks', getString('panel-tab-tasks'));
     setStaticText('tabbtn-mcp', getString('panel-tab-mcp'));
+    setStaticText('tabbtn-settings', getString('panel-tab-settings'));
     // 插件核心未挂载时的降级提示
     const nrTitle = document.querySelector('#not-ready h3');
     if (nrTitle) nrTitle.textContent = getString('panel-notready-title');
@@ -517,7 +531,7 @@ function init(): void {
   $<HTMLButtonElement>('btn-notready-retry').addEventListener('click', () => {
     window.location.reload();
   });
-  for (const t of ['skills', 'tasks', 'mcp'] as TabId[]) {
+  for (const t of ['skills', 'tasks', 'mcp', 'settings'] as TabId[]) {
     $<HTMLButtonElement>(`tabbtn-${t}`).addEventListener('click', () => switchTab(t));
   }
   bindQuickActions();
@@ -547,6 +561,7 @@ function init(): void {
   renderSkeleton('skills');
   renderSkeleton('tasks');
   renderSkeleton('mcp');
+  renderSkeleton('settings');
   void refreshAll().catch((e: unknown) => showError(getString('panel-err-load-failed', { error: errMsg(e) })));
 }
 
@@ -554,7 +569,7 @@ function init(): void {
 function switchTab(tab: TabId): void {
   activeTab = tab;
   clearError();
-  for (const t of ['skills', 'tasks', 'mcp'] as TabId[]) {
+  for (const t of ['skills', 'tasks', 'mcp', 'settings'] as TabId[]) {
     $<HTMLButtonElement>(`tabbtn-${t}`).classList.toggle('active', t === tab);
     $<HTMLElement>(`tab-${t}`).hidden = t !== tab;
   }
@@ -566,6 +581,7 @@ async function refreshAll(): Promise<void> {
   await refreshTab('skills');
   await refreshTab('tasks');
   await refreshTab('mcp');
+  await refreshTab('settings');
 }
 
 /** 刷新单个选项卡 */
@@ -577,8 +593,10 @@ async function refreshTab(tab: TabId): Promise<void> {
     renderSkills();
   } else if (tab === 'tasks') {
     renderTasks();
-  } else {
+  } else if (tab === 'mcp') {
     renderMcp();
+  } else {
+    renderSettings();
   }
 }
 
@@ -2700,6 +2718,186 @@ async function togglePauseAll(): Promise<void> {
   }
 }
 
+// ══════════════════════════ 设置选项卡 ══════════════════════════
+
+function settingRow(
+  label: string,
+  desc: string,
+  control: HTMLElement
+): HTMLElement {
+  const row = el('div', 'settings-row');
+  const main = el('div', 'settings-main');
+  main.append(el('div', 'settings-label', label));
+  main.append(el('div', 'settings-desc', desc));
+  row.append(main, control);
+  return row;
+}
+
+function renderSettings(): void {
+  const root = $<HTMLElement>('tab-settings');
+  root.replaceChildren();
+
+  const taskCard = el('div', 'card');
+  const taskHead = el('div', 'card-head');
+  const taskIcon = el('span', 'sg-ic');
+  taskIcon.innerHTML = iconSVG('clock', 'ic');
+  taskHead.append(taskIcon, el('h3', '', getString('panel-settings-task-title')));
+  taskCard.append(taskHead);
+
+  const leaseInput = el('input') as HTMLInputElement;
+  leaseInput.type = 'number';
+  leaseInput.min = '1';
+  leaseInput.max = '1440';
+  leaseInput.step = '1';
+  leaseInput.className = 'settings-control';
+  leaseInput.value = String(prefs.get(PREFS.TASK_LEASE_MINUTES, 30));
+  leaseInput.addEventListener('change', () => {
+    const value = Number(leaseInput.value);
+    if (!Number.isFinite(value) || value < 1 || value > 1440) {
+      showError(getString('panel-settings-lease-invalid'));
+      leaseInput.value = String(prefs.get(PREFS.TASK_LEASE_MINUTES, 30));
+      return;
+    }
+    prefs.set(PREFS.TASK_LEASE_MINUTES, Math.floor(value));
+    clearError();
+  });
+  taskCard.append(
+    settingRow(
+      getString('panel-settings-lease-label'),
+      getString('panel-settings-lease-desc'),
+      leaseInput
+    )
+  );
+
+  const maxFileInput = el('input') as HTMLInputElement;
+  maxFileInput.type = 'number';
+  maxFileInput.min = '1';
+  maxFileInput.step = '1';
+  maxFileInput.className = 'settings-control';
+  maxFileInput.value = String(prefs.get(PREFS.DELIVERABLE_MAX_FILE_MB, 200));
+  maxFileInput.addEventListener('change', () => {
+    const value = Number(maxFileInput.value);
+    if (!Number.isFinite(value) || value <= 0) {
+      showError(getString('panel-settings-maxfile-invalid'));
+      maxFileInput.value = String(
+        prefs.get(PREFS.DELIVERABLE_MAX_FILE_MB, 200)
+      );
+      return;
+    }
+    prefs.set(PREFS.DELIVERABLE_MAX_FILE_MB, value);
+    clearError();
+  });
+  taskCard.append(
+    settingRow(
+      getString('panel-settings-maxfile-label'),
+      getString('panel-settings-maxfile-desc'),
+      maxFileInput
+    )
+  );
+  taskCard.append(el('div', 'hint', getString('panel-settings-live-hint')));
+  root.append(taskCard);
+
+  const shortcutCard = el('div', 'card');
+  const shortcutHead = el('div', 'card-head');
+  const shortcutIcon = el('span', 'sg-ic');
+  shortcutIcon.innerHTML = iconSVG('key', 'ic');
+  shortcutHead.append(
+    shortcutIcon,
+    el('h3', '', getString('panel-settings-shortcut-title'))
+  );
+  shortcutCard.append(shortcutHead);
+
+  const enabled = el('input') as HTMLInputElement;
+  enabled.type = 'checkbox';
+  enabled.className = 'switch';
+  enabled.checked = isShortcutEnabled();
+  enabled.addEventListener('change', () => {
+    prefs.set(PREFS.SHORTCUT_ENABLED, enabled.checked);
+    renderSettings();
+  });
+  shortcutCard.append(
+    settingRow(
+      getString('panel-settings-shortcut-enable'),
+      getString('panel-settings-shortcut-current', {
+        shortcut: getPanelShortcutLabel(),
+      }),
+      enabled
+    )
+  );
+
+  const warn = el('div', 'settings-warning');
+  warn.hidden = true;
+
+  const bindShortcutKey = (prefKey: string, platform: 'mac' | 'win'): HTMLInputElement => {
+    const input = el('input') as HTMLInputElement;
+    input.type = 'text';
+    input.maxLength = 1;
+    input.className = 'settings-control short-key';
+    input.value = normalizeShortcutKey(prefs.get(prefKey, 'J'));
+    const refreshWarn = () => {
+      const value = normalizeShortcutKey(input.value);
+      const activePlatform =
+        (platform === 'mac' && isMacPlatform()) ||
+        (platform === 'win' && !isMacPlatform());
+      if (activePlatform && isShortcutKeyReserved(value)) {
+        warn.textContent = getString('prefs-shortcut-conflict-warn', { key: value });
+        warn.hidden = false;
+      } else if (activePlatform) {
+        warn.hidden = true;
+        warn.textContent = '';
+      }
+    };
+    input.addEventListener('input', refreshWarn);
+    input.addEventListener('change', () => {
+      const value = String(input.value ?? '').trim().toUpperCase();
+      if (!/^[A-Z0-9]$/.test(value)) {
+        showError(getString('prefs-shortcut-invalid'));
+        input.value = normalizeShortcutKey(prefs.get(prefKey, 'J'));
+        refreshWarn();
+        return;
+      }
+      prefs.set(prefKey, value);
+      input.value = value;
+      clearError();
+      renderSettings();
+    });
+    return input;
+  };
+
+  const macInput = bindShortcutKey(PREFS.SHORTCUT_KEY_MAC, 'mac');
+  const winInput = bindShortcutKey(PREFS.SHORTCUT_KEY_WIN, 'win');
+  shortcutCard.append(
+    settingRow(
+      getString('panel-settings-shortcut-mac'),
+      getString('panel-settings-shortcut-mac-desc'),
+      macInput
+    )
+  );
+  shortcutCard.append(
+    settingRow(
+      getString('panel-settings-shortcut-win'),
+      getString('panel-settings-shortcut-win-desc'),
+      winInput
+    )
+  );
+
+  const activeKey = normalizeShortcutKey(
+    prefs.get(
+      isMacPlatform() ? PREFS.SHORTCUT_KEY_MAC : PREFS.SHORTCUT_KEY_WIN,
+      'J'
+    )
+  );
+  if (isShortcutKeyReserved(activeKey)) {
+    warn.textContent = getString('prefs-shortcut-conflict-warn', {
+      key: activeKey,
+    });
+    warn.hidden = false;
+  }
+  shortcutCard.append(warn);
+  shortcutCard.append(el('div', 'hint', getString('panel-settings-shortcut-hint')));
+  root.append(shortcutCard);
+}
+
 // ══════════════════════════ MCP 服务选项卡 ══════════════════════════
 
 /** 渲染 MCP 服务选项卡 */
@@ -2792,6 +2990,32 @@ function renderMcp(): void {
     localOnly.append(document.createTextNode(getString('panel-mcp-local-only')));
     card.append(localOnly);
   }
+
+  // 访问凭据开关：原独立设置页配置合并到 MCP 模块。
+  const tokenToggleRow = el('div', 'mcp-row');
+  tokenToggleRow.append(el('span', 'k', getString('panel-mcp-token-switch')));
+  const tokenToggle = el('input');
+  tokenToggle.type = 'checkbox';
+  tokenToggle.className = 'switch';
+  tokenToggle.checked = tokenEnabled;
+  tokenToggle.setAttribute('aria-label', getString('panel-mcp-token-switch'));
+  tokenToggle.addEventListener('change', () => {
+    try {
+      mcp.setTokenEnabled(tokenToggle.checked);
+      renderMcp();
+    } catch (e) {
+      showError(getString('panel-err-mcp-token-toggle-failed', { error: errMsg(e) }));
+    }
+  });
+  tokenToggleRow.append(tokenToggle);
+  tokenToggleRow.append(
+    el(
+      'span',
+      '',
+      getString(tokenEnabled ? 'panel-mcp-token-enabled' : 'panel-mcp-token-disabled-short')
+    )
+  );
+  card.append(tokenToggleRow);
 
   // token：默认关闭，仅在用户显式启用访问凭据后生成/展示。
   const tokenRow = el('div', 'mcp-row');
