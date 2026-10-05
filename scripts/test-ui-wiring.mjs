@@ -181,8 +181,8 @@ assert.ok(
 );
 assert.ok(
   panelTs.includes('function parseSkillMarkdownMetadata(') &&
-    panelTs.includes("readFrontMatterField('name')") &&
-    panelTs.includes("readFrontMatterField('description')") &&
+    panelTs.includes("readField('name')") &&
+    panelTs.includes("readField('description')") &&
     panelTs.includes('nameInput.value = metadata.name') &&
     panelTs.includes('descInput.value = metadata.description'),
   'SKILL.md upload must parse and auto-fill name and description'
