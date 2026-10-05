@@ -3,7 +3,8 @@
  *
  * 按 docs/TECH_VALIDATION_MCP_HTTP.md 方案 A 实现：
  * 复用 Zotero 进程内 Connector Server，注册端点 /skilltask/mcp，
- * 以 MCP 2025-11-25 的 stateless JSON Streamable HTTP 兼容路径处理 JSON-RPC POST；不提供 SSE/服务端主动消息。
+ * 同一 HTTP 端点双栈支持 MCP 2025-11-25（legacy stateless）与 2026-07-28（modern stateless）；
+ * 不提供 SSE/服务端主动消息。
  *
  * 安全（需求 §8）：
  * - 默认启用：pref `extensions.zotero-skill-task.mcp.enabled` 默认为 true；
@@ -64,8 +65,14 @@ const PREF_MCP_ENABLED = 'extensions.zotero-skill-task.mcp.enabled';
 const PREF_MCP_TOKEN = 'extensions.zotero-skill-task.mcp.token';
 /** 访问凭据开关（默认关闭；用户可显式启用） */
 const PREF_MCP_TOKEN_ENABLED = 'extensions.zotero-skill-task.mcp.tokenEnabled';
-/** 响应的 MCP 协议版本 */
-const MCP_PROTOCOL_VERSION = '2025-11-25';
+/** 双协议：旧客户端继续 initialize；新客户端按请求携带 2026 envelope。 */
+const MCP_LEGACY_PROTOCOL_VERSION = '2025-11-25';
+const MCP_MODERN_PROTOCOL_VERSION = '2026-07-28';
+const PROTOCOL_VERSION_META_KEY = 'io.modelcontextprotocol/protocolVersion';
+const CLIENT_CAPABILITIES_META_KEY = 'io.modelcontextprotocol/clientCapabilities';
+const SERVER_INFO_META_KEY = 'io.modelcontextprotocol/serverInfo';
+const HEADER_MISMATCH = -32020;
+const UNSUPPORTED_PROTOCOL_VERSION = -32022;
 /** JSON-RPC 错误码 */
 const ERR_PARSE = -32700;
 const ERR_METHOD_NOT_FOUND = -32601;
@@ -116,6 +123,35 @@ function extractBearer(headers: any): string {
   const m = String(raw).match(/^Bearer\s+(.+)$/i);
   return m ? m[1].trim() : '';
 }
+
+/** Zotero Server 的 header 容器在不同版本可能是 plain object / Map-like。 */
+function getHeader(headers: any, name: string): string {
+  if (!headers) return '';
+  try {
+    if (typeof headers.get === 'function') {
+      const v = headers.get(name);
+      if (v !== undefined && v !== null) return String(v);
+    }
+  } catch {
+    // fall through
+  }
+  const wanted = name.toLowerCase();
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === wanted) {
+      const v = headers[key];
+      return v === undefined || v === null ? '' : String(v);
+    }
+  }
+  return '';
+}
+
+function modernEnvelope(rpc: any): Record<string, unknown> | null {
+  const meta = rpc?.params?._meta;
+  return meta && typeof meta === 'object' && !Array.isArray(meta)
+    ? (meta as Record<string, unknown>)
+    : null;
+}
+
 
 /** 取 Zotero 全局对象（Node 测试环境下可能不存在） */
 function zoteroGlobal(): any {
