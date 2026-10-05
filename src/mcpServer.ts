@@ -620,6 +620,9 @@ export class McpServer implements IMcpServer {
         `Missing or invalid ${CLIENT_CAPABILITIES_META_KEY}`
       );
     }
+    // 2026 通知仍要求合法 envelope，但标准 header 的“必须存在”规则只约束 request。
+    if (rpc?.id === undefined || rpc?.id === null) return null;
+
     if (!headerVersion) {
       return this.jsonErrStatus(
         id,
@@ -628,8 +631,6 @@ export class McpServer implements IMcpServer {
         'MCP-Protocol-Version header is absent'
       );
     }
-    // 通知在 2026 协议中免标准 header presence 校验。
-    if (rpc?.id === undefined || rpc?.id === null) return null;
 
     const method = typeof rpc?.method === 'string' ? rpc.method : '';
     const methodHeader = getHeader(headers, 'Mcp-Method').trim();
@@ -702,8 +703,9 @@ export class McpServer implements IMcpServer {
           );
         case 'initialize':
           if (modern) {
-            return this.jsonErr(
+            return this.jsonErrStatus(
               id,
+              404,
               ERR_METHOD_NOT_FOUND,
               'Method not found: initialize'
             );
@@ -971,11 +973,18 @@ export class McpServer implements IMcpServer {
           );
         }
         default:
-          return this.jsonErr(
-            id,
-            ERR_METHOD_NOT_FOUND,
-            `Method not found: ${String(method)}`
-          );
+          return modern
+            ? this.jsonErrStatus(
+                id,
+                404,
+                ERR_METHOD_NOT_FOUND,
+                `Method not found: ${String(method)}`
+              )
+            : this.jsonErr(
+                id,
+                ERR_METHOD_NOT_FOUND,
+                `Method not found: ${String(method)}`
+              );
       }
     } catch (e) {
       return this.jsonErr(id, ERR_INTERNAL, `Internal error: ${errMsg(e)}`);
