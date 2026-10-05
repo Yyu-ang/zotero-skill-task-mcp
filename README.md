@@ -8,6 +8,15 @@ Zotero 桌面端插件：用户在 Zotero 内维护“技能组”（AI 任务�
 
 > MCP 默认启用，访问凭据默认关闭；默认单文件交付上限为 200MB，可由用户自行调高。
 
+### MCP 协议兼容
+
+同一 `/skilltask/mcp` HTTP 端点双栈支持：
+
+- **MCP 2026-07-28**：无状态 `server/discover → tools/list/tools/call`；每个 request 使用 `params._meta` 协议 envelope，并校验 `MCP-Protocol-Version`、`Mcp-Method`，`tools/call` 额外校验 `Mcp-Name`。现代响应带 `resultType: "complete"`、serverInfo meta；`tools/list` 带 `ttlMs/cacheScope`；工具调用同时返回 `content` 和 `structuredContent`。
+- **MCP 2025-11-25**：保留既有 stateless `initialize / ping / tools/list / tools/call` 路径，兼容已有客户端。
+
+现代客户端优先使用 2026-07-28；旧客户端无需修改即可继续使用 2025-11-25。
+
 ## 版本要求
 
 - Zotero **9.0** 及以上（`strict_min_version: "9.0"`，`strict_max_version: "10.*"`）
