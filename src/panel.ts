@@ -463,6 +463,11 @@ function applyStaticI18n(): void {
 // ────────────────────────── 初始化 ──────────────────────────
 
 function init(): void {
+  const bootStatus = document.getElementById('boot-status') as HTMLElement | null;
+  if (bootStatus) {
+    bootStatus.textContent = '面板脚本已启动，正在连接插件核心…';
+  }
+
   // 需求单 需求1：JS 侧 Fluent 国际化（文案唯一来源为 ftl，构建时提取）
   initLocale();
   // panel.xhtml 里的静态文案（title/按钮/选项卡/降级提示）同样走 getString
@@ -492,6 +497,7 @@ function init(): void {
     // 插件核心未就绪：降级显示提示，主界面隐藏；若 startup 留下具体错误则一并展示。
     $<HTMLDivElement>('main-ui').hidden = true;
     $<HTMLDivElement>('not-ready').hidden = false;
+    if (bootStatus) bootStatus.hidden = true;
     try {
       const startupError = String((Zotero as any)?.SkillTaskStartupError ?? '').trim();
       if (startupError) {
@@ -506,6 +512,7 @@ function init(): void {
     return;
   }
   $<HTMLSpanElement>('ver').textContent = `v${api.version}`;
+  if (bootStatus) bootStatus.hidden = true;
   // 先按最终布局占位骨架屏，再异步刷新真实数据
   renderSkeleton('skills');
   renderSkeleton('tasks');
