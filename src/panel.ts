@@ -1344,7 +1344,24 @@ function renderForm(wrap: HTMLElement): void {
     curDel.type === 'file' && curDel.maxBytes
       ? String(Math.round((curDel.maxBytes / 1048576) * 10) / 10)
       : '';
-  fileOpts.append(rowAttachFile, extInput, maxMBInput);
+  const fileNameInput = el('input');
+  fileNameInput.type = 'text';
+  fileNameInput.placeholder = getString('panel-form-target-file-name-ph');
+  fileNameInput.value =
+    curDel.type === 'file' ? curDel.targetFileName ?? '' : '';
+  const filePolicyRow = el('div', 'field-inline');
+  filePolicyRow.append(el('span', 'muted', getString('panel-form-existing-attachment')));
+  const filePolicy = el('select') as HTMLSelectElement;
+  filePolicy.append(
+    new Option(getString('panel-form-existing-skip'), 'skip'),
+    new Option(getString('panel-form-existing-overwrite'), 'overwrite')
+  );
+  filePolicy.value =
+    curDel.type === 'file'
+      ? curDel.existingAttachmentPolicy ?? 'skip'
+      : 'skip';
+  filePolicyRow.append(filePolicy);
+  fileOpts.append(rowAttachFile, fileNameInput, filePolicyRow, extInput, maxMBInput);
 
   // Markdown 交付物选项
   const mdOpts = el('div', '');
@@ -1373,7 +1390,26 @@ function renderForm(wrap: HTMLElement): void {
   attachMd.checked = curDel.type === 'markdown' && !!curDel.attachToItem;
   const rowAttachMd = el('div', 'check-row');
   rowAttachMd.append(attachMd, el('span', '', getString('panel-form-attach-md')));
-  mdOpts.append(rowMdNote, rowMdFile, rowAttachMd);
+  const mdFileNameInput = el('input');
+  mdFileNameInput.type = 'text';
+  mdFileNameInput.placeholder = getString('panel-form-target-md-name-ph');
+  mdFileNameInput.value =
+    curDel.type === 'markdown' && curDel.target === 'file'
+      ? curDel.targetFileName ?? ''
+      : '';
+  const mdPolicyRow = el('div', 'field-inline');
+  mdPolicyRow.append(el('span', 'muted', getString('panel-form-existing-attachment')));
+  const mdPolicy = el('select') as HTMLSelectElement;
+  mdPolicy.append(
+    new Option(getString('panel-form-existing-skip'), 'skip'),
+    new Option(getString('panel-form-existing-overwrite'), 'overwrite')
+  );
+  mdPolicy.value =
+    curDel.type === 'markdown' && curDel.target === 'file'
+      ? curDel.existingAttachmentPolicy ?? 'skip'
+      : 'skip';
+  mdPolicyRow.append(mdPolicy);
+  mdOpts.append(rowMdNote, rowMdFile, rowAttachMd, mdFileNameInput, mdPolicyRow);
 
   const syncDelOpts = (): void => {
     const v = (
@@ -1383,10 +1419,17 @@ function renderForm(wrap: HTMLElement): void {
     )?.value;
     fileOpts.hidden = v !== 'file';
     mdOpts.hidden = v !== 'markdown';
+    filePolicyRow.hidden = !attachFile.checked;
+    const mdToFile = v === 'markdown' && mdTargetFile.checked;
+    rowAttachMd.hidden = !mdToFile;
+    mdFileNameInput.hidden = !mdToFile;
+    mdPolicyRow.hidden = !mdToFile || !attachMd.checked;
   };
-  for (const r of [delNote, delFile, delMd]) {
+  for (const r of [delNote, delFile, delMd, mdTargetNote, mdTargetFile]) {
     r.addEventListener('change', syncDelOpts);
   }
+  attachFile.addEventListener('change', syncDelOpts);
+  attachMd.addEventListener('change', syncDelOpts);
   syncDelOpts();
   delField.append(fileOpts, mdOpts);
   wrap.append(delField);
@@ -1462,6 +1505,14 @@ function renderForm(wrap: HTMLElement): void {
           if (exts.length) {
             d.allowedExtensions = [...new Set(exts)];
           }
+          const targetFileName = fileNameInput.value.trim();
+          if (targetFileName) {
+            d.targetFileName = targetFileName;
+          }
+          if (attachFile.checked) {
+            d.existingAttachmentPolicy =
+              filePolicy.value === 'overwrite' ? 'overwrite' : 'skip';
+          }
           const mbText = maxMBInput.value.trim();
           if (mbText) {
             const mb = Number(mbText);
@@ -1485,8 +1536,16 @@ function renderForm(wrap: HTMLElement): void {
             type: 'markdown',
             target,
           };
-          if (target === 'file' && attachMd.checked) {
-            d.attachToItem = true;
+          if (target === 'file') {
+            const targetFileName = mdFileNameInput.value.trim();
+            if (targetFileName) {
+              d.targetFileName = targetFileName;
+            }
+            if (attachMd.checked) {
+              d.attachToItem = true;
+              d.existingAttachmentPolicy =
+                mdPolicy.value === 'overwrite' ? 'overwrite' : 'skip';
+            }
           }
           deliverable = d;
         } else {
@@ -2360,6 +2419,7 @@ async function rescan(skillGroupId: string): Promise<void> {
         skipped: result.skipped,
         waiting: result.waitingMaterial,
         promoted: result.promoted,
+        completedExisting: result.completedExisting,
       });
     await refreshTab('tasks');
     // refreshTab 重建了 DOM，重新定位进度元素以保留结果摘要
@@ -2459,8 +2519,16 @@ async function scanAllGroups(): Promise<void> {
         skipped: a.skipped + r.skipped,
         waitingMaterial: a.waitingMaterial + r.waitingMaterial,
         promoted: a.promoted + r.promoted,
+        completedExisting: a.completedExisting + r.completedExisting,
       }),
-      { scanned: 0, created: 0, skipped: 0, waitingMaterial: 0, promoted: 0 }
+      {
+        scanned: 0,
+        created: 0,
+        skipped: 0,
+        waitingMaterial: 0,
+        promoted: 0,
+        completedExisting: 0,
+      }
     );
     fill.style.width = '100%';
     text.textContent =
@@ -2471,6 +2539,7 @@ async function scanAllGroups(): Promise<void> {
         skipped: agg.skipped,
         waiting: agg.waitingMaterial,
         promoted: agg.promoted,
+        completedExisting: agg.completedExisting,
       });
     await refreshTab(activeTab);
   } catch (e) {
