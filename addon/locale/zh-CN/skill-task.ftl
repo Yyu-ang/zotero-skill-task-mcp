@@ -258,7 +258,6 @@ prefs-token-copy-fail = 自动复制失败，请手动复制输入框中的凭�
 prefs-regen-confirm = 重新生成访问凭据？旧凭据将立即失效。
 prefs-regen-done = 新凭据已生成，旧凭据已失效
 prefs-save-fail = 保存失败：{error}
-prefs-port-invalid = 端口必须为 1-65535 的整数。
 prefs-shortcut-invalid = 快捷键必须为单个字母或数字（A-Z / 0-9）。
 prefs-shortcut-conflict-warn = 该按键与 Zotero 已有快捷键冲突（Ctrl/⌘+Shift+{key}），面板快捷键可能无法触发。
 panel-doc-title = 技能任务
