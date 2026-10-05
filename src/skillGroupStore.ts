@@ -357,7 +357,7 @@ export class SkillGroupStore implements ISkillGroupStore {
       for (const child of await IOUtils.getChildren(referencesDir)) {
         try {
           const stat = await IOUtils.stat(child);
-          if (stat.type !== 'file') continue;
+          if (stat.type === 'directory') continue;
           references.push({
             name: PathUtils.filename(child),
             path: child,
@@ -442,7 +442,7 @@ export class SkillGroupStore implements ISkillGroupStore {
       for (const child of await IOUtils.getChildren(srcRefs)) {
         try {
           const stat = await IOUtils.stat(child);
-          if (stat.type !== 'file') continue;
+          if (stat.type === 'directory') continue;
           await IOUtils.copy(
             child,
             PathUtils.join(destRefs, PathUtils.filename(child))
