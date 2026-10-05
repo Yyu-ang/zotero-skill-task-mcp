@@ -88,6 +88,57 @@ function sanitizeAssetName(name: unknown): string {
   return base;
 }
 
+/**
+ * 将面板窗口/MCP 等其他 JS realm 传入的 Uint8Array 正规化到插件核心 realm。
+ * 不能使用 `instanceof Uint8Array`：跨窗口 TypedArray 会被误判为 false。
+ */
+function normalizeUploadBytes(value: unknown, emptyMessage: string): Uint8Array {
+  const src = value as
+    | {
+        byteLength?: number;
+        byteOffset?: number;
+        length?: number;
+        buffer?: ArrayBufferLike;
+        [index: number]: number;
+      }
+    | undefined;
+
+  const byteLength =
+    typeof src?.byteLength === 'number'
+      ? src.byteLength
+      : typeof src?.length === 'number'
+        ? src.length
+        : 0;
+
+  if (!Number.isFinite(byteLength) || byteLength <= 0) {
+    throw new Error(emptyMessage);
+  }
+
+  // 主路径：TypedArray/DataView（包括来自另一个 window realm 的对象）
+  try {
+    if (src?.buffer) {
+      const offset =
+        typeof src.byteOffset === 'number' && Number.isFinite(src.byteOffset)
+          ? src.byteOffset
+          : 0;
+      const local = new Uint8Array(src.buffer, offset, byteLength);
+      return new Uint8Array(local);
+    }
+  } catch {
+    // 继续走 ArrayLike 降级路径
+  }
+
+  // 降级：普通 ArrayLike<number>
+  try {
+    const local = Uint8Array.from(src as ArrayLike<number>);
+    if (local.byteLength > 0) return local;
+  } catch {
+    // fall through
+  }
+
+  throw new Error(emptyMessage);
+}
+
 /** 校验范围配置：类型合法；指定集合时至少选一个集合 */
 function assertValidScope(scope: unknown): void {
   const s = scope as SkillGroup['scope'] | undefined;
@@ -375,14 +426,12 @@ export class SkillGroupStore implements ISkillGroupStore {
 
   async writeSkillFile(id: string, bytes: Uint8Array): Promise<SkillAssetFile> {
     this.findOrThrow(id);
-    if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0) {
-      throw new Error('SKILL.md 文件为空');
-    }
+    const localBytes = normalizeUploadBytes(bytes, 'SKILL.md 文件为空');
     const dir = this.skillDir(id);
     await IOUtils.makeDirectory(dir, { ignoreExisting: true });
     const path = PathUtils.join(dir, SKILL_FILE_NAME);
-    await IOUtils.write(path, bytes);
-    return { name: SKILL_FILE_NAME, path, size: bytes.byteLength };
+    await IOUtils.write(path, localBytes);
+    return { name: SKILL_FILE_NAME, path, size: localBytes.byteLength };
   }
 
   async writeReferenceFiles(
@@ -393,13 +442,14 @@ export class SkillGroupStore implements ISkillGroupStore {
     const dir = await this.ensureReferencesDir(id);
     const written: SkillAssetFile[] = [];
     for (const input of files) {
-      if (!(input?.bytes instanceof Uint8Array) || input.bytes.byteLength === 0) {
-        throw new Error(`参考文件为空：${String(input?.name ?? '')}`);
-      }
-      const name = sanitizeAssetName(input.name);
+      const name = sanitizeAssetName(input?.name);
+      const localBytes = normalizeUploadBytes(
+        input?.bytes,
+        `参考文件为空：${String(input?.name ?? '')}`
+      );
       const path = PathUtils.join(dir, name);
-      await IOUtils.write(path, input.bytes);
-      written.push({ name, path, size: input.bytes.byteLength });
+      await IOUtils.write(path, localBytes);
+      written.push({ name, path, size: localBytes.byteLength });
     }
     return written;
   }
