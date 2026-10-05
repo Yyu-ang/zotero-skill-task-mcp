@@ -105,8 +105,12 @@ export function error(...args: any[]): void {
 export const LIMITS = {
   /** 技能组名称最大字符数 */
   skillGroupName: 200,
+  /** 技能说明最大字符数 */
+  skillDescription: 20000,
   /** 任务指令最大字符数 */
   instruction: 20000,
+  /** references 说明最大字符数 */
+  referencesDescription: 20000,
   /** 任务失败原因（lastError）最大字符数 */
   failReason: 1000,
   /** MCP 提交的笔记 HTML 最大字符数（防超大提交卡死清理流程） */
