@@ -369,11 +369,20 @@ export class TaskGenerator implements ITaskGenerator {
       const inScope = await this.skillGroups.matchesScope(sg, item);
       if (!inScope) return;
 
-      // 2. 已完成任务保持幂等：重复扫描不为同一技能组×条目再造任务
+      // 2. 已完成任务保持幂等。
+      // 例外：若该 done 是此前 skip 策略因“已有同名附件”自动完成的，
+      // 用户后来改成 overwrite，则必须允许生成新任务，否则下拉策略永远不会生效。
       const latest = this.tasks.findLatestBySkillAndItem(sg.id, itemKey);
       if (latest?.status === 'done') {
-        counters.skipped++;
-        return;
+        const conflict = this.deliverableAttachmentConflict(sg);
+        const wasCompletedByExistingAttachment =
+          conflict?.policy === 'overwrite' &&
+          !!latest.attachmentKey &&
+          latest.deliverableRef === conflict.targetName;
+        if (!wasCompletedByExistingAttachment) {
+          counters.skipped++;
+          return;
+        }
       }
 
       // 3. 若配置了固定附件名 + skip 策略，已有同名附件直接视为完成
@@ -459,6 +468,27 @@ export class TaskGenerator implements ITaskGenerator {
     }
   }
 
+  private deliverableAttachmentConflict(
+    sg: SkillGroup
+  ): { targetName: string; policy: 'overwrite' | 'skip' } | null {
+    const d = sg.deliverable;
+    if (d.type === 'file') {
+      if (!d.attachToItem || !d.targetFileName) return null;
+      return {
+        targetName: d.targetFileName,
+        policy: d.existingAttachmentPolicy ?? 'skip',
+      };
+    }
+    if (d.type === 'markdown' && d.target === 'file') {
+      if (!d.attachToItem || !d.targetFileName) return null;
+      return {
+        targetName: d.targetFileName,
+        policy: d.existingAttachmentPolicy ?? 'skip',
+      };
+    }
+    return null;
+  }
+
   /**
    * 仅当交付物会挂成附件、配置了固定目标文件名，且同名策略为 skip 时，
    * 扫描才可根据既有附件直接判定任务已完成。
@@ -467,25 +497,12 @@ export class TaskGenerator implements ITaskGenerator {
     sg: SkillGroup,
     item: any
   ): Promise<any | null> {
-    const d = sg.deliverable;
-    const targetName =
-      d.type === 'file'
-        ? d.targetFileName
-        : d.type === 'markdown' && d.target === 'file'
-          ? d.targetFileName
-          : undefined;
-    const attach =
-      d.type === 'file'
-        ? !!d.attachToItem
-        : d.type === 'markdown' && d.target === 'file'
-          ? !!d.attachToItem
-          : false;
-    const policy =
-      d.type === 'file' || (d.type === 'markdown' && d.target === 'file')
-        ? d.existingAttachmentPolicy ?? 'skip'
-        : undefined;
-    if (!attach || !targetName || policy !== 'skip') return null;
-    const matches = await findChildAttachmentsByFilename(item, targetName);
+    const conflict = this.deliverableAttachmentConflict(sg);
+    if (!conflict || conflict.policy !== 'skip') return null;
+    const matches = await findChildAttachmentsByFilename(
+      item,
+      conflict.targetName
+    );
     return matches[0] ?? null;
   }
 
