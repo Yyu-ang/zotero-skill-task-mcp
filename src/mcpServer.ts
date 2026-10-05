@@ -536,11 +536,11 @@ export class McpServer implements IMcpServer {
       typeof envelope?.[PROTOCOL_VERSION_META_KEY] === 'string'
         ? String(envelope[PROTOCOL_VERSION_META_KEY])
         : '';
+    const legacyHeader =
+      !headerVersion || /^202[45]-/.test(headerVersion);
     const modernAttempt =
-      headerVersion === MCP_MODERN_PROTOCOL_VERSION ||
-      envelopeVersion === MCP_MODERN_PROTOCOL_VERSION ||
-      envelopeVersion.startsWith('2026-') ||
-      headerVersion.startsWith('2026-');
+      !!envelopeVersion ||
+      (!!headerVersion && !legacyHeader);
 
     if (modernAttempt) {
       const rejection = this.validateModernRequest(
