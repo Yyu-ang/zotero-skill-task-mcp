@@ -66,7 +66,13 @@ const PREF_MCP_TOKEN = 'extensions.zotero-skill-task.mcp.token';
 /** 访问凭据开关（默认关闭；用户可显式启用） */
 const PREF_MCP_TOKEN_ENABLED = 'extensions.zotero-skill-task.mcp.tokenEnabled';
 /** 双协议：旧客户端继续 initialize；新客户端按请求携带 2026 envelope。 */
-const MCP_LEGACY_PROTOCOL_VERSION = '2025-11-25';
+const MCP_LEGACY_PROTOCOL_VERSIONS = [
+  '2025-11-25',
+  '2025-06-18',
+  '2025-03-26',
+  '2024-11-05',
+] as const;
+const MCP_LEGACY_PROTOCOL_VERSION = MCP_LEGACY_PROTOCOL_VERSIONS[0];
 const MCP_MODERN_PROTOCOL_VERSION = '2026-07-28';
 const PROTOCOL_VERSION_META_KEY = 'io.modelcontextprotocol/protocolVersion';
 const CLIENT_CAPABILITIES_META_KEY = 'io.modelcontextprotocol/clientCapabilities';
@@ -150,6 +156,27 @@ function modernEnvelope(rpc: any): Record<string, unknown> | null {
   return meta && typeof meta === 'object' && !Array.isArray(meta)
     ? (meta as Record<string, unknown>)
     : null;
+}
+
+function negotiateLegacyProtocolVersion(params: any): string {
+  const offered: string[] = [];
+  if (Array.isArray(params?.protocolVersions)) {
+    offered.push(...params.protocolVersions.filter((v: unknown) => typeof v === 'string'));
+  }
+  if (Array.isArray(params?.supportedProtocolVersions)) {
+    offered.push(
+      ...params.supportedProtocolVersions.filter((v: unknown) => typeof v === 'string')
+    );
+  }
+  if (typeof params?.protocolVersion === 'string') {
+    offered.unshift(params.protocolVersion);
+  }
+  for (const version of offered) {
+    if ((MCP_LEGACY_PROTOCOL_VERSIONS as readonly string[]).includes(version)) {
+      return version;
+    }
+  }
+  return MCP_LEGACY_PROTOCOL_VERSION;
 }
 
 
@@ -710,8 +737,9 @@ export class McpServer implements IMcpServer {
               'Method not found: initialize'
             );
           }
+          const negotiatedVersion = negotiateLegacyProtocolVersion(rpc?.params);
           return this.jsonOk(id, {
-            protocolVersion: MCP_LEGACY_PROTOCOL_VERSION,
+            protocolVersion: negotiatedVersion,
             capabilities: { tools: {} },
             serverInfo: {
               name: 'zotero-skill-task-mcp',
