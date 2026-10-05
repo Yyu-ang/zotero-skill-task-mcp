@@ -680,10 +680,37 @@ export class McpServer implements IMcpServer {
     try {
       switch (method) {
         case 'ping':
-          return this.jsonOk(id, {});
+          return this.jsonOk(id, {}, modern);
+        case 'server/discover':
+          if (!modern) {
+            return this.jsonErr(
+              id,
+              ERR_METHOD_NOT_FOUND,
+              'Method not found: server/discover'
+            );
+          }
+          return this.jsonOk(
+            id,
+            {
+              ttlMs: 0,
+              cacheScope: 'private',
+              supportedVersions: [MCP_MODERN_PROTOCOL_VERSION],
+              capabilities: { tools: {} },
+              instructions:
+                'Use tools/list, then skilltask_claim / skilltask_inject_skill / skilltask_submit as needed.',
+            },
+            true
+          );
         case 'initialize':
+          if (modern) {
+            return this.jsonErr(
+              id,
+              ERR_METHOD_NOT_FOUND,
+              'Method not found: initialize'
+            );
+          }
           return this.jsonOk(id, {
-            protocolVersion: MCP_PROTOCOL_VERSION,
+            protocolVersion: MCP_LEGACY_PROTOCOL_VERSION,
             capabilities: { tools: {} },
             serverInfo: {
               name: 'zotero-skill-task-mcp',
@@ -885,21 +912,22 @@ export class McpServer implements IMcpServer {
                 },
               },
             ],
-          });
+            ...(modern ? { ttlMs: 0, cacheScope: 'private' } : {}),
+          }, modern);
         case 'tools/call': {
           const name = rpc?.params?.name;
           const args = rpc?.params?.arguments ?? {};
           if (name === 'skilltask_claim') {
             const result = await this.claim(args);
-            return this.toolOk(id, result);
+            return this.toolOk(id, result, modern);
           }
           if (name === 'skilltask_inject_skill') {
             const result = await this.injectSkill(args);
-            return this.toolOk(id, result);
+            return this.toolOk(id, result, modern);
           }
           if (name === 'skilltask_submit') {
             const result = await this.submit(args);
-            return this.toolOk(id, result);
+            return this.toolOk(id, result, modern);
           }
           return this.jsonErr(
             id,
