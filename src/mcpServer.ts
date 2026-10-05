@@ -6,8 +6,8 @@
  * 以 MCP 2025-11-25 的 stateless JSON Streamable HTTP 兼容路径处理 JSON-RPC POST；不提供 SSE/服务端主动消息。
  *
  * 安全（需求 §8）：
- * - 默认关闭：pref `extensions.zotero-skill-task.mcp.enabled` 默认为 false，
- *   handler 层强制检查，未启用返回 503。
+ * - 默认启用：pref `extensions.zotero-skill-task.mcp.enabled` 默认为 true；
+ *   用户关闭后 handler 层强制返回 503。
  * - Bearer 鉴权：token 存 pref `extensions.zotero-skill-task.mcp.token`，
  *   逐字节常量时间比较，缺失/错误返回 401。日志绝不输出 token。
  * - 只返回技能组配置允许的材料（metadata / abstract / notes / pdf 开关）。
@@ -27,6 +27,7 @@ import type {
   IMcpServer,
   ISkillGroupStore,
   ITaskStore,
+  ITaskGenerator,
   MaterialPackage,
   SkillDeliverable,
   SkillGroup,
@@ -52,11 +53,11 @@ declare const TextEncoder: any;
 /** MCP 端点路径（技术文档 §2.1 方案 A） */
 const MCP_PATH = '/skilltask/mcp';
 const MCP_HOST = '127.0.0.1';
-/** 默认关闭开关（addon/prefs.js 中默认 false） */
+/** MCP 服务开关（addon/prefs.js 中默认 true） */
 const PREF_MCP_ENABLED = 'extensions.zotero-skill-task.mcp.enabled';
 /** Bearer token 存储键（由 ensureToken 生成/持久化） */
 const PREF_MCP_TOKEN = 'extensions.zotero-skill-task.mcp.token';
-/** 访问凭据开关（默认启用；用户可显式关闭） */
+/** 访问凭据开关（默认关闭；用户可显式启用） */
 const PREF_MCP_TOKEN_ENABLED = 'extensions.zotero-skill-task.mcp.tokenEnabled';
 /** 响应的 MCP 协议版本 */
 const MCP_PROTOCOL_VERSION = '2025-11-25';
@@ -267,6 +268,7 @@ function errMsg(e: unknown): string {
 export class McpServer implements IMcpServer {
   private skillGroups: ISkillGroupStore;
   private tasks: ITaskStore;
+  private generator: ITaskGenerator;
   private version: string;
   /** 端点是否已注册到 Zotero.Server（注册/注销幂等的依据） */
   private registered = false;
@@ -274,10 +276,12 @@ export class McpServer implements IMcpServer {
   constructor(deps: {
     skillGroups: ISkillGroupStore;
     tasks: ITaskStore;
+    generator: ITaskGenerator;
     version: string;
   }) {
     this.skillGroups = deps.skillGroups;
     this.tasks = deps.tasks;
+    this.generator = deps.generator;
     this.version = deps.version;
   }
 
@@ -331,7 +335,7 @@ export class McpServer implements IMcpServer {
   }
 
   isEnabled(): boolean {
-    return !!prefs.get(PREF_MCP_ENABLED, false);
+    return !!prefs.get(PREF_MCP_ENABLED, true);
   }
 
   /**
@@ -392,9 +396,9 @@ export class McpServer implements IMcpServer {
     return token;
   }
 
-  /** 访问凭据是否启用（默认启用） */
+  /** 访问凭据是否启用（默认关闭） */
   isTokenEnabled(): boolean {
-    return !!prefs.get(PREF_MCP_TOKEN_ENABLED, true);
+    return !!prefs.get(PREF_MCP_TOKEN_ENABLED, false);
   }
 
   /** 设置访问凭据开关 */
@@ -440,7 +444,7 @@ export class McpServer implements IMcpServer {
   private async handleRequest(
     requestData: any
   ): Promise<[number, string, string]> {
-    // ① 默认关闭：在 handler 层强制（需求 §8）
+    // ① 服务开关：用户关闭后在 handler 层强制拒绝
     if (!this.isEnabled()) {
       return [
         503,
@@ -530,6 +534,92 @@ export class McpServer implements IMcpServer {
                 },
               },
               {
+                name: 'skilltask_inject_skill',
+                description:
+                  '向 Zotero Skill Task 注入一个新的技能组（任务模板）。' +
+                  '技能组创建后默认启用；可配置作用范围、输入材料和交付物。' +
+                  'scanNow=true 时创建后立即扫描现有文库生成任务。',
+                inputSchema: {
+                  type: 'object',
+                  properties: {
+                    name: {
+                      type: 'string',
+                      description: '技能组名称。',
+                    },
+                    instruction: {
+                      type: 'string',
+                      description: '发给 AI 的任务指令。',
+                    },
+                    scope: {
+                      type: 'object',
+                      description: '作用范围；省略时为全库。',
+                      properties: {
+                        type: { type: 'string', enum: ['all', 'collections'] },
+                        collectionKeys: {
+                          type: 'array',
+                          items: { type: 'string' },
+                        },
+                        includeSubcollections: { type: 'boolean' },
+                      },
+                    },
+                    materials: {
+                      type: 'object',
+                      description:
+                        '输入材料；省略时提供 metadata+abstract，不提供 notes/PDF。',
+                      properties: {
+                        includeMetadata: { type: 'boolean' },
+                        includeAbstract: { type: 'boolean' },
+                        includeNotes: { type: 'boolean' },
+                        pdf: { type: 'string', enum: ['earliest', 'none'] },
+                      },
+                    },
+                    deliverable: {
+                      description: '交付物；省略时为 Zotero 内建笔记。',
+                      oneOf: [
+                        {
+                          type: 'object',
+                          properties: {
+                            type: { type: 'string', const: 'note' },
+                          },
+                          required: ['type'],
+                        },
+                        {
+                          type: 'object',
+                          properties: {
+                            type: { type: 'string', const: 'file' },
+                            attachToItem: { type: 'boolean' },
+                            allowedExtensions: {
+                              type: 'array',
+                              items: { type: 'string' },
+                            },
+                            maxBytes: {
+                              type: 'integer',
+                              minimum: 1,
+                              maximum: 209715200,
+                            },
+                          },
+                          required: ['type'],
+                        },
+                        {
+                          type: 'object',
+                          properties: {
+                            type: { type: 'string', const: 'markdown' },
+                            target: { type: 'string', enum: ['note', 'file'] },
+                            attachToItem: { type: 'boolean' },
+                          },
+                          required: ['type', 'target'],
+                        },
+                      ],
+                    },
+                    scanNow: {
+                      type: 'boolean',
+                      description: '创建后是否立即扫描现有文库；默认 false。',
+                    },
+                  },
+                  required: ['name', 'instruction'],
+                },
+              },
+              {
                 name: 'skilltask_submit',
                 description:
                   '提交任务结果。按领取时返回的 deliverable schema 选择参数：' +
@@ -577,6 +667,10 @@ export class McpServer implements IMcpServer {
           const args = rpc?.params?.arguments ?? {};
           if (name === 'skilltask_claim') {
             const result = await this.claim(args);
+            return this.toolOk(id, result);
+          }
+          if (name === 'skilltask_inject_skill') {
+            const result = await this.injectSkill(args);
             return this.toolOk(id, result);
           }
           if (name === 'skilltask_submit') {
@@ -632,6 +726,76 @@ export class McpServer implements IMcpServer {
     return this.jsonOk(id, {
       content: [{ type: 'text', text: JSON.stringify(result) }],
     });
+  }
+
+  // ──────────── skill injection ────────────
+
+  /**
+   * 由 MCP 客户端向程序注入新的技能组。
+   * 不接受调用方指定 id/version/归档状态，避免绕过 SkillGroupStore 的约束。
+   */
+  private async injectSkill(params: any): Promise<{
+    ok: boolean;
+    skillGroup?: SkillGroup;
+    scan?: unknown;
+    error?: string;
+  }> {
+    try {
+      const name = typeof params?.name === 'string' ? params.name.trim() : '';
+      const instruction =
+        typeof params?.instruction === 'string' ? params.instruction.trim() : '';
+      if (!name) return { ok: false, error: 'missing-name' };
+      if (!instruction) return { ok: false, error: 'missing-instruction' };
+
+      const rawScope = params?.scope;
+      const scope =
+        rawScope?.type === 'collections'
+          ? {
+              type: 'collections' as const,
+              collectionKeys: Array.isArray(rawScope.collectionKeys)
+                ? rawScope.collectionKeys
+                    .filter((v: unknown): v is string => typeof v === 'string')
+                    .map((v: string) => v.trim())
+                    .filter(Boolean)
+                : [],
+              includeSubcollections: rawScope.includeSubcollections !== false,
+            }
+          : {
+              type: 'all' as const,
+              collectionKeys: [],
+              includeSubcollections: true,
+            };
+
+      const rawMaterials = params?.materials ?? {};
+      const materials = {
+        includeMetadata: rawMaterials.includeMetadata !== false,
+        includeAbstract: rawMaterials.includeAbstract !== false,
+        includeNotes: rawMaterials.includeNotes === true,
+        pdf: rawMaterials.pdf === 'earliest' ? ('earliest' as const) : ('none' as const),
+      };
+
+      const deliverable: SkillDeliverable =
+        params?.deliverable && typeof params.deliverable === 'object'
+          ? (params.deliverable as SkillDeliverable)
+          : { type: 'note' };
+
+      const skillGroup = await this.skillGroups.create({
+        name,
+        instruction,
+        scope,
+        materials,
+        deliverable,
+      });
+
+      let scan: unknown = undefined;
+      if (params?.scanNow === true) {
+        scan = await this.generator.scanSkillGroup(skillGroup.id);
+      }
+
+      return { ok: true, skillGroup, scan };
+    } catch (e) {
+      return { ok: false, error: errMsg(e) };
+    }
   }
 
   // ──────────── claim（FR-06 / FR-07） ────────────

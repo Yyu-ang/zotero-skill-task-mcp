@@ -21,6 +21,8 @@ const prefsTs = read('src/preferences.ts');
 const uiTs = read('src/ui.ts');
 const coreTs = read('src/core.ts');
 const mcpTs = read('src/mcpServer.ts');
+const addonPrefs = read('addon/prefs.js');
+const utilsTs = read('src/utils.ts');
 
 const includeSrc = 'chrome://zotero/content/include.js';
 const panelScript = 'src="panel.js"';
@@ -100,8 +102,33 @@ assert.ok(
   'MCP endpoint must accept Zotero.Server pre-parsed application/json payloads'
 );
 assert.ok(
-  mcpTs.includes("prefs.get(PREF_MCP_TOKEN_ENABLED, true)"),
-  'MCP access-token protection must default to enabled'
+  mcpTs.includes("prefs.get(PREF_MCP_TOKEN_ENABLED, false)") &&
+    addonPrefs.includes('pref("extensions.zotero-skill-task.mcp.tokenEnabled", false)'),
+  'MCP access-token protection must default to disabled'
+);
+assert.ok(
+  mcpTs.includes("prefs.get(PREF_MCP_ENABLED, true)") &&
+    addonPrefs.includes('pref("extensions.zotero-skill-task.mcp.enabled", true)'),
+  'MCP service must default to enabled'
+);
+assert.ok(
+  mcpTs.includes("name: 'skilltask_inject_skill'") &&
+    mcpTs.includes('this.injectSkill(args)') &&
+    mcpTs.includes('this.skillGroups.create({'),
+  'MCP must expose a tool that injects skills into the existing skill-group store'
+);
+assert.ok(
+  panel.includes('[hidden] { display: none !important; }'),
+  'panel CSS must not override hidden notices such as boot and stopped-service banners'
+);
+assert.ok(
+  uiTs.includes("icon: 'chrome://zotero-skill-task/content/icons/icon.svg'"),
+  'Tools menu item must include the plugin icon'
+);
+assert.ok(
+  addonPrefs.includes('pref("extensions.zotero-skill-task.deliverable.maxFileMB", 200)') &&
+    utilsTs.includes('deliverableFileBytes: 200 * 1024 * 1024'),
+  'default file limit must be 200 MB'
 );
 
 for (const required of [

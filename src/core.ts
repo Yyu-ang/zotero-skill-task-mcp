@@ -93,6 +93,7 @@ export class PluginCore {
       const mcp = new McpServer({
         skillGroups,
         tasks,
+        generator,
         version: this.version,
       });
       generator.registerNotifier();

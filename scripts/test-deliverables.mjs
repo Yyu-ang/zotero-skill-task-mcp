@@ -59,9 +59,13 @@ describe('assertValidDeliverable', () => {
       /非法/
     );
   });
-  test('file maxBytes 大值不再抛错（硬上限已移除）', () => {
-    const d = D.assertValidDeliverable({ type: 'file', maxBytes: 300 * 1048576 });
-    assert.equal(d.maxBytes, 300 * 1048576);
+  test('file maxBytes 超过 200MB 拒绝', () => {
+    assert.throws(
+      () => D.assertValidDeliverable({ type: 'file', maxBytes: 201 * 1048576 }),
+      /200MB/
+    );
+    const d = D.assertValidDeliverable({ type: 'file', maxBytes: 200 * 1048576 });
+    assert.equal(d.maxBytes, 200 * 1048576);
   });
   test('markdown target=note/file 通过', () => {
     assert.deepEqual(
@@ -249,7 +253,7 @@ describe('resolveMaxBytes / resolveAllowedExtensions', () => {
     assert.equal(D.resolveMaxBytes({ type: 'file', maxBytes: 1024 }), 1024);
     assert.equal(
       D.resolveMaxBytes({ type: 'file', maxBytes: -5 }),
-      50 * 1024 * 1024
+      200 * 1024 * 1024
     );
     assert.deepEqual(D.resolveAllowedExtensions({ type: 'file', allowedExtensions: ['PDF'] }), ['pdf']);
     assert.ok(D.resolveAllowedExtensions({ type: 'file' }).includes('pdf'));

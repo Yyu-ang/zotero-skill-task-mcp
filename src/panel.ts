@@ -497,7 +497,7 @@ function init(): void {
     // 插件核心未就绪：降级显示提示，主界面隐藏；若 startup 留下具体错误则一并展示。
     $<HTMLDivElement>('main-ui').hidden = true;
     $<HTMLDivElement>('not-ready').hidden = false;
-    if (bootStatus) bootStatus.hidden = true;
+    if (bootStatus) bootStatus.remove();
     try {
       const startupError = String((Zotero as any)?.SkillTaskStartupError ?? '').trim();
       if (startupError) {
@@ -512,7 +512,7 @@ function init(): void {
     return;
   }
   $<HTMLSpanElement>('ver').textContent = `v${api.version}`;
-  if (bootStatus) bootStatus.hidden = true;
+  if (bootStatus) bootStatus.remove();
   // 先按最终布局占位骨架屏，再异步刷新真实数据
   renderSkeleton('skills');
   renderSkeleton('tasks');
@@ -1175,7 +1175,7 @@ function renderForm(wrap: HTMLElement): void {
           const mbText = maxMBInput.value.trim();
           if (mbText) {
             const mb = Number(mbText);
-            if (!Number.isFinite(mb) || mb <= 0) {
+            if (!Number.isFinite(mb) || mb <= 0 || mb > 200) {
               showError(getString('panel-form-err-maxmb'));
               return;
             }
@@ -2213,6 +2213,7 @@ function renderMcp(): void {
   let port: number | null = null;
   let url: string | null = null;
   let lanAccessible = false;
+  let tokenEnabled = false;
   let token = '';
   try {
     const st = mcp.getStatus();
@@ -2221,7 +2222,8 @@ function renderMcp(): void {
     port = st.port;
     url = st.url;
     lanAccessible = st.lanAccessible;
-    token = mcp.ensureToken();
+    tokenEnabled = !!mcp.isTokenEnabled?.();
+    token = tokenEnabled ? mcp.ensureToken() : '';
   } catch (e) {
     showError(getString('panel-err-mcp-status-failed', { error: errMsg(e) }));
     return;
@@ -2288,27 +2290,33 @@ function renderMcp(): void {
     card.append(localOnly);
   }
 
-  // token 显示 + 复制 + 重新生成
+  // token：默认关闭，仅在用户显式启用访问凭据后生成/展示。
   const tokenRow = el('div', 'mcp-row');
   tokenRow.append(el('span', 'k', getString('panel-mcp-token')));
-  const tokenBox = el('div', 'token-box', token);
-  tokenBox.title = getString('panel-mcp-token-title');
-  tokenRow.append(tokenBox);
-  const tokenCopyBtn = opBtn(getString('panel-action-copy'), (b) => copyText(token, b), {
-    icon: 'copy',
-    title: getString('panel-mcp-copy-token-title'),
-    secondary: true,
-  });
-  tokenRow.append(tokenCopyBtn);
-  const regenBtn = opBtn(getString('panel-action-regen'), () => regenerateToken(), {
-    icon: 'key',
-    title: getString('panel-mcp-regen-title'),
-    secondary: true,
-  });
-  tokenRow.append(regenBtn);
+  if (tokenEnabled) {
+    const tokenBox = el('div', 'token-box', token);
+    tokenBox.title = getString('panel-mcp-token-title');
+    tokenRow.append(tokenBox);
+    tokenRow.append(
+      opBtn(getString('panel-action-copy'), (b) => copyText(token, b), {
+        icon: 'copy',
+        title: getString('panel-mcp-copy-token-title'),
+        secondary: true,
+      })
+    );
+    tokenRow.append(
+      opBtn(getString('panel-action-regen'), () => regenerateToken(), {
+        icon: 'key',
+        title: getString('panel-mcp-regen-title'),
+        secondary: true,
+      })
+    );
+  } else {
+    tokenRow.append(el('span', 'muted', getString('panel-mcp-token-disabled')));
+  }
   card.append(tokenRow);
   card.append(
-    el('div', 'hint', getString('panel-mcp-token-hint'))
+    el('div', 'hint', getString(tokenEnabled ? 'panel-mcp-token-hint' : 'panel-mcp-token-disabled-hint'))
   );
 
   // 关闭时的明确提示

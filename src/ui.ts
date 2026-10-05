@@ -159,6 +159,7 @@ export function registerToolsMenu(
         {
           menuType: 'menuitem',
           l10nID: 'skill-task-menu-open-panel',
+          icon: 'chrome://zotero-skill-task/content/icons/icon.svg',
           onCommand: () => openSkillTaskPanel(rootURI),
         },
       ],
