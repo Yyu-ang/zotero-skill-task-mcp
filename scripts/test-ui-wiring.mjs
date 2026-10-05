@@ -99,8 +99,27 @@ assert.ok(
 );
 
 assert.ok(
-  mcpTs.includes("const MCP_PROTOCOL_VERSION = '2025-11-25'"),
-  'MCP endpoint must advertise the implemented 2025 Streamable HTTP compatibility revision'
+  mcpTs.includes("const MCP_LEGACY_PROTOCOL_VERSION = '2025-11-25'") &&
+    mcpTs.includes("const MCP_MODERN_PROTOCOL_VERSION = '2026-07-28'") &&
+    mcpTs.includes("case 'server/discover':") &&
+    mcpTs.includes("supportedVersions: [MCP_MODERN_PROTOCOL_VERSION]"),
+  'MCP endpoint must dual-serve legacy 2025-11-25 and modern 2026-07-28'
+);
+assert.ok(
+  mcpTs.includes("getHeader(requestData?.headers, 'MCP-Protocol-Version')") &&
+    mcpTs.includes("getHeader(headers, 'Mcp-Method')") &&
+    mcpTs.includes("getHeader(headers, 'Mcp-Name')") &&
+    mcpTs.includes('validateModernRequest(') &&
+    mcpTs.includes('HEADER_MISMATCH'),
+  'MCP 2026 requests must validate the standard stateless HTTP headers and envelope'
+);
+assert.ok(
+  mcpTs.includes("ttlMs: 0") &&
+    mcpTs.includes("cacheScope: 'private'") &&
+    mcpTs.includes("resultType: 'complete'") &&
+    mcpTs.includes('structuredContent: result') &&
+    (mcpTs.match(/outputSchema:/g)?.length ?? 0) >= 3,
+  'MCP 2026 responses must include cache hints, complete result type, structured content, and output schemas'
 );
 assert.ok(
   mcpTs.includes("typeof incoming === 'object'") &&

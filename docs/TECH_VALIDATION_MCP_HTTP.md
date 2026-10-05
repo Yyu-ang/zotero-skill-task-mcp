@@ -171,6 +171,27 @@ function onShutdown() {
 
 技术上可行（接口 scriptable，`asyncListen` 回调不阻塞主线程，minecraft 项目已演示），但等于重造一个有 bug 的 httpd：要自己处理分包、Content-Length/chunked、keep-alive、并发连接。没有理由不用现成的 `HttpServer` 模块。仅当未来 `httpd.sys.mjs` 被移除时才考虑。
 
+### 2.5 当前 MCP 协议实现（2026-10-05 更新）
+
+当前插件仍复用方案 A 的 Zotero Connector Server，但 MCP 协议层已经改为**双栈无状态**：
+
+- **Modern：2026-07-28**
+  - 客户端先调用 `server/discover`；
+  - 每个 request 的 `params._meta` 必须包含 `io.modelcontextprotocol/protocolVersion = "2026-07-28"` 与 `io.modelcontextprotocol/clientCapabilities`；
+  - HTTP request 必须携带匹配的 `MCP-Protocol-Version` 与 `Mcp-Method`；`tools/call` 还需 `Mcp-Name` 与 `params.name` 一致；
+  - `server/discover` 返回 `supportedVersions=["2026-07-28"]`、capabilities 与私有零 TTL 缓存提示；
+  - 现代 response 带 `resultType: "complete"`，并在 `_meta["io.modelcontextprotocol/serverInfo"]` 暴露服务端身份；
+  - `tools/list` 返回 `ttlMs/cacheScope`；
+  - 三个业务工具都声明 `outputSchema`，`tools/call` 同时返回文本 `content` 与 `structuredContent`。
+- **Legacy：2025-11-25**
+  - 保留 `initialize`、`ping`、`tools/list`、`tools/call`；
+  - 不要求 2026 envelope/header；
+  - 响应保持原有 legacy 形态，避免现有客户端因升级失效。
+
+协议选择采用 body/header 判别：只有 2026 协议声明进入 modern 校验；2025-era 请求保持 legacy 路径。modern 请求的 header/body 协议声明不一致返回 HTTP 400 + `-32020 HeaderMismatch`；声明不支持的 2026 revision 返回 HTTP 400 + `-32022 UnsupportedProtocolVersion`。
+
+> 本实现是针对 Zotero `Server.Endpoints` 的轻量双协议适配，没有引入官方 TypeScript SDK runtime；协议契约依据 2026-07-28 官方 SDK/规范实现。仍应在真实目标 MCP 客户端上做端到端互操作测试。
+
 ### 2.4 安全边界放在哪一层
 
 | 层 | 做法 | 依据 |

@@ -3,7 +3,8 @@
  *
  * 按 docs/TECH_VALIDATION_MCP_HTTP.md 方案 A 实现：
  * 复用 Zotero 进程内 Connector Server，注册端点 /skilltask/mcp，
- * 以 MCP 2025-11-25 的 stateless JSON Streamable HTTP 兼容路径处理 JSON-RPC POST；不提供 SSE/服务端主动消息。
+ * 同一 HTTP 端点双栈支持 MCP 2025-11-25（legacy stateless）与 2026-07-28（modern stateless）；
+ * 不提供 SSE/服务端主动消息。
  *
  * 安全（需求 §8）：
  * - 默认启用：pref `extensions.zotero-skill-task.mcp.enabled` 默认为 true；
@@ -64,8 +65,14 @@ const PREF_MCP_ENABLED = 'extensions.zotero-skill-task.mcp.enabled';
 const PREF_MCP_TOKEN = 'extensions.zotero-skill-task.mcp.token';
 /** 访问凭据开关（默认关闭；用户可显式启用） */
 const PREF_MCP_TOKEN_ENABLED = 'extensions.zotero-skill-task.mcp.tokenEnabled';
-/** 响应的 MCP 协议版本 */
-const MCP_PROTOCOL_VERSION = '2025-11-25';
+/** 双协议：旧客户端继续 initialize；新客户端按请求携带 2026 envelope。 */
+const MCP_LEGACY_PROTOCOL_VERSION = '2025-11-25';
+const MCP_MODERN_PROTOCOL_VERSION = '2026-07-28';
+const PROTOCOL_VERSION_META_KEY = 'io.modelcontextprotocol/protocolVersion';
+const CLIENT_CAPABILITIES_META_KEY = 'io.modelcontextprotocol/clientCapabilities';
+const SERVER_INFO_META_KEY = 'io.modelcontextprotocol/serverInfo';
+const HEADER_MISMATCH = -32020;
+const UNSUPPORTED_PROTOCOL_VERSION = -32022;
 /** JSON-RPC 错误码 */
 const ERR_PARSE = -32700;
 const ERR_METHOD_NOT_FOUND = -32601;
@@ -116,6 +123,35 @@ function extractBearer(headers: any): string {
   const m = String(raw).match(/^Bearer\s+(.+)$/i);
   return m ? m[1].trim() : '';
 }
+
+/** Zotero Server 的 header 容器在不同版本可能是 plain object / Map-like。 */
+function getHeader(headers: any, name: string): string {
+  if (!headers) return '';
+  try {
+    if (typeof headers.get === 'function') {
+      const v = headers.get(name);
+      if (v !== undefined && v !== null) return String(v);
+    }
+  } catch {
+    // fall through
+  }
+  const wanted = name.toLowerCase();
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === wanted) {
+      const v = headers[key];
+      return v === undefined || v === null ? '' : String(v);
+    }
+  }
+  return '';
+}
+
+function modernEnvelope(rpc: any): Record<string, unknown> | null {
+  const meta = rpc?.params?._meta;
+  return meta && typeof meta === 'object' && !Array.isArray(meta)
+    ? (meta as Record<string, unknown>)
+    : null;
+}
+
 
 /** 取 Zotero 全局对象（Node 测试环境下可能不存在） */
 function zoteroGlobal(): any {
@@ -493,12 +529,148 @@ export class McpServer implements IMcpServer {
         }),
       ];
     }
-    return this.dispatch(rpc);
+
+    const envelope = modernEnvelope(rpc);
+    const headerVersion = getHeader(requestData?.headers, 'MCP-Protocol-Version').trim();
+    const envelopeVersion =
+      typeof envelope?.[PROTOCOL_VERSION_META_KEY] === 'string'
+        ? String(envelope[PROTOCOL_VERSION_META_KEY])
+        : '';
+    const legacyHeader =
+      !headerVersion || /^202[45]-/.test(headerVersion);
+    const modernAttempt =
+      !!envelopeVersion ||
+      (!!headerVersion && !legacyHeader);
+
+    if (modernAttempt) {
+      const rejection = this.validateModernRequest(
+        rpc,
+        requestData?.headers,
+        envelope,
+        headerVersion,
+        envelopeVersion
+      );
+      if (rejection) return rejection;
+    }
+
+    return this.dispatch(rpc, modernAttempt);
+  }
+
+  /**
+   * MCP 2026-07-28 的每请求 envelope/header 校验。
+   * Legacy 2025 请求完全不经过这里，保证旧客户端兼容。
+   */
+  private validateModernRequest(
+    rpc: any,
+    headers: any,
+    envelope: Record<string, unknown> | null,
+    headerVersion: string,
+    envelopeVersion: string
+  ): [number, string, string] | null {
+    const id = rpc?.id ?? null;
+
+    if (envelopeVersion && headerVersion && envelopeVersion !== headerVersion) {
+      return this.jsonErrStatus(
+        id,
+        400,
+        HEADER_MISMATCH,
+        'MCP-Protocol-Version header disagrees with request envelope'
+      );
+    }
+    if (envelopeVersion && envelopeVersion !== MCP_MODERN_PROTOCOL_VERSION) {
+      return this.jsonErrStatus(
+        id,
+        400,
+        UNSUPPORTED_PROTOCOL_VERSION,
+        `Unsupported protocol version: ${envelopeVersion}`,
+        { supportedVersions: [MCP_MODERN_PROTOCOL_VERSION] }
+      );
+    }
+    if (headerVersion && headerVersion !== MCP_MODERN_PROTOCOL_VERSION) {
+      return this.jsonErrStatus(
+        id,
+        400,
+        UNSUPPORTED_PROTOCOL_VERSION,
+        `Unsupported protocol version: ${headerVersion}`,
+        { supportedVersions: [MCP_MODERN_PROTOCOL_VERSION] }
+      );
+    }
+    if (!envelope) {
+      return this.jsonErrStatus(
+        id,
+        400,
+        ERR_INVALID_PARAMS,
+        'Missing MCP 2026 request envelope in params._meta'
+      );
+    }
+    if (envelopeVersion !== MCP_MODERN_PROTOCOL_VERSION) {
+      return this.jsonErrStatus(
+        id,
+        400,
+        ERR_INVALID_PARAMS,
+        `Missing ${PROTOCOL_VERSION_META_KEY}`
+      );
+    }
+    const caps = envelope[CLIENT_CAPABILITIES_META_KEY];
+    if (!caps || typeof caps !== 'object' || Array.isArray(caps)) {
+      return this.jsonErrStatus(
+        id,
+        400,
+        ERR_INVALID_PARAMS,
+        `Missing or invalid ${CLIENT_CAPABILITIES_META_KEY}`
+      );
+    }
+    // 2026 通知仍要求合法 envelope，但标准 header 的“必须存在”规则只约束 request。
+    if (rpc?.id === undefined || rpc?.id === null) return null;
+
+    if (!headerVersion) {
+      return this.jsonErrStatus(
+        id,
+        400,
+        HEADER_MISMATCH,
+        'MCP-Protocol-Version header is absent'
+      );
+    }
+
+    const method = typeof rpc?.method === 'string' ? rpc.method : '';
+    const methodHeader = getHeader(headers, 'Mcp-Method').trim();
+    if (!methodHeader) {
+      return this.jsonErrStatus(id, 400, HEADER_MISMATCH, 'Mcp-Method header is absent');
+    }
+    if (methodHeader !== method) {
+      return this.jsonErrStatus(
+        id,
+        400,
+        HEADER_MISMATCH,
+        'Mcp-Method header disagrees with JSON-RPC method'
+      );
+    }
+
+    if (method === 'tools/call') {
+      const bodyName =
+        typeof rpc?.params?.name === 'string' ? rpc.params.name : '';
+      const nameHeader = getHeader(headers, 'Mcp-Name').trim();
+      if (!nameHeader) {
+        return this.jsonErrStatus(id, 400, HEADER_MISMATCH, 'Mcp-Name header is absent');
+      }
+      if (nameHeader !== bodyName) {
+        return this.jsonErrStatus(
+          id,
+          400,
+          HEADER_MISMATCH,
+          'Mcp-Name header disagrees with params.name'
+        );
+      }
+    }
+    return null;
   }
 
   // ──────────── JSON-RPC 2.0 分发 ────────────
 
-  private async dispatch(rpc: any): Promise<[number, string, string]> {
+  private async dispatch(
+    rpc: any,
+    modern: boolean
+  ): Promise<[number, string, string]> {
     const method = rpc?.method;
     const id = rpc?.id;
     // 无 id 的通知：notifications/initialized → 202 空响应；其他通知忽略
@@ -508,10 +680,38 @@ export class McpServer implements IMcpServer {
     try {
       switch (method) {
         case 'ping':
-          return this.jsonOk(id, {});
+          return this.jsonOk(id, {}, modern);
+        case 'server/discover':
+          if (!modern) {
+            return this.jsonErr(
+              id,
+              ERR_METHOD_NOT_FOUND,
+              'Method not found: server/discover'
+            );
+          }
+          return this.jsonOk(
+            id,
+            {
+              ttlMs: 0,
+              cacheScope: 'private',
+              supportedVersions: [MCP_MODERN_PROTOCOL_VERSION],
+              capabilities: { tools: {} },
+              instructions:
+                'Use tools/list, then skilltask_claim / skilltask_inject_skill / skilltask_submit as needed.',
+            },
+            true
+          );
         case 'initialize':
+          if (modern) {
+            return this.jsonErrStatus(
+              id,
+              404,
+              ERR_METHOD_NOT_FOUND,
+              'Method not found: initialize'
+            );
+          }
           return this.jsonOk(id, {
-            protocolVersion: MCP_PROTOCOL_VERSION,
+            protocolVersion: MCP_LEGACY_PROTOCOL_VERSION,
             capabilities: { tools: {} },
             serverInfo: {
               name: 'zotero-skill-task-mcp',
@@ -536,6 +736,15 @@ export class McpServer implements IMcpServer {
                         '技能组 ID；省略则从全部待领取任务中领取最早的一条。',
                     },
                   },
+                },
+                outputSchema: {
+                  type: 'object',
+                  properties: {
+                    task: { type: ['object', 'null'] },
+                    materials: { type: ['object', 'null'] },
+                    message: { type: 'string' },
+                  },
+                  required: ['task', 'materials'],
                 },
               },
               {
@@ -670,6 +879,17 @@ export class McpServer implements IMcpServer {
                   },
                   required: ['name', 'instruction'],
                 },
+                outputSchema: {
+                  type: 'object',
+                  properties: {
+                    ok: { type: 'boolean' },
+                    skillGroup: { type: 'object' },
+                    assets: { type: 'object' },
+                    scan: {},
+                    error: { type: 'string' },
+                  },
+                  required: ['ok'],
+                },
               },
               {
                 name: 'skilltask_submit',
@@ -711,23 +931,40 @@ export class McpServer implements IMcpServer {
                   },
                   required: ['taskId'],
                 },
+                outputSchema: {
+                  type: 'object',
+                  properties: {
+                    ok: { type: 'boolean' },
+                    noteKey: { type: 'string' },
+                    fileName: { type: 'string' },
+                    attachmentKey: { type: 'string' },
+                    deliverableType: {
+                      type: 'string',
+                      enum: ['note', 'file', 'markdown'],
+                    },
+                    duplicate: { type: 'boolean' },
+                    error: { type: 'string' },
+                  },
+                  required: ['ok'],
+                },
               },
             ],
-          });
+            ...(modern ? { ttlMs: 0, cacheScope: 'private' } : {}),
+          }, modern);
         case 'tools/call': {
           const name = rpc?.params?.name;
           const args = rpc?.params?.arguments ?? {};
           if (name === 'skilltask_claim') {
             const result = await this.claim(args);
-            return this.toolOk(id, result);
+            return this.toolOk(id, result, modern);
           }
           if (name === 'skilltask_inject_skill') {
             const result = await this.injectSkill(args);
-            return this.toolOk(id, result);
+            return this.toolOk(id, result, modern);
           }
           if (name === 'skilltask_submit') {
             const result = await this.submit(args);
-            return this.toolOk(id, result);
+            return this.toolOk(id, result, modern);
           }
           return this.jsonErr(
             id,
@@ -736,22 +973,59 @@ export class McpServer implements IMcpServer {
           );
         }
         default:
-          return this.jsonErr(
-            id,
-            ERR_METHOD_NOT_FOUND,
-            `Method not found: ${String(method)}`
-          );
+          return modern
+            ? this.jsonErrStatus(
+                id,
+                404,
+                ERR_METHOD_NOT_FOUND,
+                `Method not found: ${String(method)}`
+              )
+            : this.jsonErr(
+                id,
+                ERR_METHOD_NOT_FOUND,
+                `Method not found: ${String(method)}`
+              );
       }
     } catch (e) {
       return this.jsonErr(id, ERR_INTERNAL, `Internal error: ${errMsg(e)}`);
     }
   }
 
-  private jsonOk(id: unknown, result: unknown): [number, string, string] {
+  private serverInfoMeta(): Record<string, unknown> {
+    return {
+      [SERVER_INFO_META_KEY]: {
+        name: 'zotero-skill-task-mcp',
+        version: this.version,
+      },
+    };
+  }
+
+  private jsonOk(
+    id: unknown,
+    result: unknown,
+    modern = false
+  ): [number, string, string] {
+    let wireResult = result;
+    if (modern) {
+      const base =
+        result && typeof result === 'object' && !Array.isArray(result)
+          ? (result as Record<string, unknown>)
+          : { value: result };
+      wireResult = {
+        ...base,
+        resultType: 'complete',
+        _meta: {
+          ...(base._meta && typeof base._meta === 'object'
+            ? (base._meta as Record<string, unknown>)
+            : {}),
+          ...this.serverInfoMeta(),
+        },
+      };
+    }
     return [
       200,
       'application/json',
-      JSON.stringify({ jsonrpc: '2.0', id, result }),
+      JSON.stringify({ jsonrpc: '2.0', id, result: wireResult }),
     ];
   }
 
@@ -760,24 +1034,49 @@ export class McpServer implements IMcpServer {
     code: number,
     message: string
   ): [number, string, string] {
+    return this.jsonErrStatus(id, 200, code, message);
+  }
+
+  private jsonErrStatus(
+    id: unknown,
+    status: number,
+    code: number,
+    message: string,
+    data?: unknown
+  ): [number, string, string] {
     return [
-      200,
+      status,
       'application/json',
-      JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }),
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id,
+        error: {
+          code,
+          message,
+          ...(data === undefined ? {} : { data }),
+        },
+      }),
     ];
   }
 
   /**
-   * tools/call 成功响应：业务错误（如空队列、提交校验失败）放在结果 JSON 里返回，
-   * 而不是 JSON-RPC 错误，保证 MCP 客户端总能拿到结构化的业务结果。
+   * tools/call 成功响应：
+   * - legacy：保留 content[].text 的旧行为；
+   * - 2026：额外提供 structuredContent，并由 jsonOk 加 resultType/serverInfo。
    */
   private toolOk(
     id: unknown,
-    result: unknown
+    result: unknown,
+    modern: boolean
   ): [number, string, string] {
-    return this.jsonOk(id, {
-      content: [{ type: 'text', text: JSON.stringify(result) }],
-    });
+    return this.jsonOk(
+      id,
+      {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        ...(modern ? { structuredContent: result } : {}),
+      },
+      modern
+    );
   }
 
   // ──────────── skill injection ────────────
