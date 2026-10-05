@@ -379,12 +379,15 @@ export class TaskGenerator implements ITaskGenerator {
       // 3. 若配置了固定附件名 + skip 策略，已有同名附件直接视为完成
       const existingAttachment = await this.findExistingDeliverableAttachment(sg, item);
       if (existingAttachment) {
-        const dtype =
-          sg.deliverable.type === 'markdown' ? 'markdown' : 'file';
+        const d = sg.deliverable;
         const targetName =
-          sg.deliverable.type === 'file'
-            ? sg.deliverable.targetFileName!
-            : sg.deliverable.targetFileName!;
+          d.type === 'file'
+            ? d.targetFileName
+            : d.type === 'markdown' && d.target === 'file'
+              ? d.targetFileName
+              : undefined;
+        if (!targetName) return;
+        const dtype = d.type === 'markdown' ? 'markdown' : 'file';
         const existingActive = this.tasks.findActiveBySkillAndItem(sg.id, itemKey);
         if (existingActive) {
           await this.tasks.complete(existingActive.id, {
