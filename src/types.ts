@@ -59,6 +59,10 @@ export type SkillDeliverable =
       allowedExtensions?: string[];
       /** 单文件最大字节数；省略用全局默认（LIMITS.deliverableFileBytes） */
       maxBytes?: number;
+      /** 可选：限定最终交付产物文件名（含扩展名） */
+      targetFileName?: string;
+      /** 挂附件且同名附件已存在时：覆盖旧附件或跳过并视为已完成 */
+      existingAttachmentPolicy?: 'overwrite' | 'skip';
     }
   | {
       /** Markdown 文本 */
@@ -67,6 +71,10 @@ export type SkillDeliverable =
       target: 'note' | 'file';
       /** target==='file' 时是否挂成父条目附件（默认 false） */
       attachToItem?: boolean;
+      /** target==='file' 时可限定最终 .md 文件名 */
+      targetFileName?: string;
+      /** 挂附件且同名附件已存在时：覆盖旧附件或跳过并视为已完成 */
+      existingAttachmentPolicy?: 'overwrite' | 'skip';
     };
 
 /** 技能文件/参考文件元信息（实际文件保存在 Zotero 数据目录 skilltask/skills/<id>/ 下） */
@@ -262,6 +270,8 @@ export interface ScanResult {
   waitingMaterial: number;
   /** 材料后到，由等待材料转为待领取 */
   promoted: number;
+  /** 因已存在同名附件且策略=skip，扫描时直接标记为已完成 */
+  completedExisting: number;
 }
 
 export interface ScanOptions {
@@ -309,6 +319,10 @@ export interface ITaskStore {
     itemKey: string
   ): Task | undefined;
   create(data: TaskCreateData): Promise<Task>;
+  /** 扫描发现既有交付附件时，原子创建一条已完成任务记录 */
+  createCompleted(data: TaskCreateData, result: TaskCompleteResult): Promise<Task>;
+  /** 取同一技能组 × 条目的最新任务（含 done/cancelled） */
+  findLatestBySkillAndItem(skillGroupId: string, itemKey: string): Task | undefined;
   /**
    * 原子领取：取最早的一条 pending（可选限定技能组）→ 标记 claimed + 租约。
    * 无任务返回 null。领取前先释放过期租约。
