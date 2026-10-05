@@ -6,8 +6,8 @@
  * 以 MCP 2025-11-25 的 stateless JSON Streamable HTTP 兼容路径处理 JSON-RPC POST；不提供 SSE/服务端主动消息。
  *
  * 安全（需求 §8）：
- * - 默认关闭：pref `extensions.zotero-skill-task.mcp.enabled` 默认为 false，
- *   handler 层强制检查，未启用返回 503。
+ * - 默认启用：pref `extensions.zotero-skill-task.mcp.enabled` 默认为 true；
+ *   用户关闭后 handler 层强制返回 503。
  * - Bearer 鉴权：token 存 pref `extensions.zotero-skill-task.mcp.token`，
  *   逐字节常量时间比较，缺失/错误返回 401。日志绝不输出 token。
  * - 只返回技能组配置允许的材料（metadata / abstract / notes / pdf 开关）。
@@ -53,7 +53,7 @@ declare const TextEncoder: any;
 /** MCP 端点路径（技术文档 §2.1 方案 A） */
 const MCP_PATH = '/skilltask/mcp';
 const MCP_HOST = '127.0.0.1';
-/** 默认关闭开关（addon/prefs.js 中默认 false） */
+/** MCP 服务开关（addon/prefs.js 中默认 true） */
 const PREF_MCP_ENABLED = 'extensions.zotero-skill-task.mcp.enabled';
 /** Bearer token 存储键（由 ensureToken 生成/持久化） */
 const PREF_MCP_TOKEN = 'extensions.zotero-skill-task.mcp.token';
@@ -444,7 +444,7 @@ export class McpServer implements IMcpServer {
   private async handleRequest(
     requestData: any
   ): Promise<[number, string, string]> {
-    // ① 默认关闭：在 handler 层强制（需求 §8）
+    // ① 服务开关：用户关闭后在 handler 层强制拒绝
     if (!this.isEnabled()) {
       return [
         503,
@@ -740,10 +740,10 @@ export class McpServer implements IMcpServer {
         pdf: rawMaterials.pdf === 'earliest' ? ('earliest' as const) : ('none' as const),
       };
 
-      const deliverable =
+      const deliverable: SkillDeliverable =
         params?.deliverable && typeof params.deliverable === 'object'
-          ? params.deliverable
-          : { type: 'note' as const };
+          ? (params.deliverable as SkillDeliverable)
+          : { type: 'note' };
 
       const skillGroup = await this.skillGroups.create({
         name,
