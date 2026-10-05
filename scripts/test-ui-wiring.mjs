@@ -222,6 +222,21 @@ assert.ok(
   'deliverable form must allow a target filename and overwrite/skip policy'
 );
 assert.ok(
+  panelTs.includes("el('div', 'field-inline conflict-policy')") &&
+    panelTs.includes("document.createElement('option')") &&
+    panelTs.includes('filePolicy.disabled = !attachFile.checked') &&
+    !panelTs.includes('filePolicyRow.hidden =') &&
+    panelTs.includes('mdPolicyRow.hidden = !mdToFile') &&
+    panelTs.includes('mdPolicy.disabled = !attachMd.checked'),
+  'attachment conflict selects must stay visible and only disable when auto-attach is off'
+);
+assert.ok(
+  panel.includes('.field-inline.conflict-policy select') &&
+    panel.includes('width: 100%; min-height: 32px') &&
+    panel.includes('.field-inline select option'),
+  'attachment conflict selects/options need explicit Firefox/Zotero rendering styles'
+);
+assert.ok(
   panelTs.includes('const taskStatusGroupOpen = new Map<string, boolean>();') &&
     panelTs.includes('bindTaskStatusGroupState(') &&
     panelTs.includes("taskStatusGroupKey(sg.id, st)") &&
