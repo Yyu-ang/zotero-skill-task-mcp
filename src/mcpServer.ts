@@ -3,7 +3,7 @@
  *
  * 按 docs/TECH_VALIDATION_MCP_HTTP.md 方案 A 实现：
  * 复用 Zotero 进程内 Connector Server，注册端点 /skilltask/mcp，
- * 以 JSON-RPC 2.0 over POST 处理 MCP 请求（Streamable HTTP 简化模式，不做 SSE）。
+ * 以 MCP 2025-11-25 的 stateless JSON Streamable HTTP 兼容路径处理 JSON-RPC POST；不提供 SSE/服务端主动消息。
  *
  * 安全（需求 §8）：
  * - 默认关闭：pref `extensions.zotero-skill-task.mcp.enabled` 默认为 false，
@@ -56,7 +56,7 @@ const MCP_HOST = '127.0.0.1';
 const PREF_MCP_ENABLED = 'extensions.zotero-skill-task.mcp.enabled';
 /** Bearer token 存储键（由 ensureToken 生成/持久化） */
 const PREF_MCP_TOKEN = 'extensions.zotero-skill-task.mcp.token';
-/** 访问凭据开关（可选项，默认关闭；关闭时 MCP 接口无需鉴权） */
+/** 访问凭据开关（默认启用；用户可显式关闭） */
 const PREF_MCP_TOKEN_ENABLED = 'extensions.zotero-skill-task.mcp.tokenEnabled';
 /** 响应的 MCP 协议版本 */
 const MCP_PROTOCOL_VERSION = '2025-11-25';
@@ -392,9 +392,9 @@ export class McpServer implements IMcpServer {
     return token;
   }
 
-  /** 访问凭据是否启用（可选项，默认关闭） */
+  /** 访问凭据是否启用（默认启用） */
   isTokenEnabled(): boolean {
-    return !!prefs.get(PREF_MCP_TOKEN_ENABLED, false);
+    return !!prefs.get(PREF_MCP_TOKEN_ENABLED, true);
   }
 
   /** 设置访问凭据开关 */
