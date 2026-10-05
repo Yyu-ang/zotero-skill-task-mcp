@@ -9,9 +9,28 @@
  * - 通过 hooks.onStartup() / hooks.onShutdown() 调用插件逻辑
  * ========================================================================== */
 
+var chromeHandle = null;
+
 function install(data, reason) {}
 
 async function startup({ id, version, rootURI }, reason) {
+  // 为独立窗口和 PreferencePane 注册稳定的 chrome:// 资源地址。
+  // 直接把 jar:file:// rootURI 交给窗口/偏好设置加载链在部分 Zotero 版本会不稳定。
+  try {
+    const aomStartup = Components.classes[
+      "@mozilla.org/addons/addon-manager-startup;1"
+    ].getService(Components.interfaces.amIAddonManagerStartup);
+    const manifestURI = Services.io.newURI(rootURI + "manifest.json");
+    chromeHandle = aomStartup.registerChrome(manifestURI, [
+      ["content", "zotero-skill-task", rootURI + "content/"],
+    ]);
+  } catch (e) {
+    Components.utils.reportError(
+      `[zotero-skill-task] Failed to register chrome resources: ${e.message}\n${e.stack}`
+    );
+    return;
+  }
+
   // 等待 Zotero 初始化完成（Green Frog 模式）
   try {
     await Zotero.initializationPromise;
@@ -116,6 +135,14 @@ function shutdown(data, reason) {
     }
   } catch (e) {
     // ignore
+  }
+  if (chromeHandle) {
+    try {
+      chromeHandle.destruct();
+    } catch (e) {
+      // ignore
+    }
+    chromeHandle = null;
   }
 }
 

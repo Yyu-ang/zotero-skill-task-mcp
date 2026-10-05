@@ -445,6 +445,9 @@
   </style>
 </head>
 <body>
+  <div id="boot-status" class="notice" role="status">
+    面板外壳已加载，正在初始化…
+  </div>
   <header class="top">
     <h1>
       <span class="logo" aria-hidden="true"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg></span>技能任务<span class="ver" id="ver"></span>
@@ -514,6 +517,17 @@
   </script>
   <!-- 独立 Zotero chrome window 需要显式导入核心 Zotero 对象。 -->
   <script src="chrome://zotero/content/include.js"></script>
+  <script>
+    (function () {
+      var status = document.getElementById('boot-status');
+      if (status) {
+        status.textContent =
+          typeof Zotero !== 'undefined'
+            ? 'Zotero 核心已加载，正在启动面板脚本…'
+            : '面板加载失败：Zotero 核心对象不可用';
+      }
+    })();
+  </script>
   <script src="panel.js"></script>
 </body>
 </html>

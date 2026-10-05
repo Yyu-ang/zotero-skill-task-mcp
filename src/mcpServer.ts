@@ -3,7 +3,7 @@
  *
  * 按 docs/TECH_VALIDATION_MCP_HTTP.md 方案 A 实现：
  * 复用 Zotero 进程内 Connector Server，注册端点 /skilltask/mcp，
- * 以 JSON-RPC 2.0 over POST 处理 MCP 请求（Streamable HTTP 简化模式，不做 SSE）。
+ * 以 MCP 2025-11-25 的 stateless JSON Streamable HTTP 兼容路径处理 JSON-RPC POST；不提供 SSE/服务端主动消息。
  *
  * 安全（需求 §8）：
  * - 默认关闭：pref `extensions.zotero-skill-task.mcp.enabled` 默认为 false，
@@ -51,14 +51,15 @@ declare const TextEncoder: any;
 
 /** MCP 端点路径（技术文档 §2.1 方案 A） */
 const MCP_PATH = '/skilltask/mcp';
+const MCP_HOST = '127.0.0.1';
 /** 默认关闭开关（addon/prefs.js 中默认 false） */
 const PREF_MCP_ENABLED = 'extensions.zotero-skill-task.mcp.enabled';
 /** Bearer token 存储键（由 ensureToken 生成/持久化） */
 const PREF_MCP_TOKEN = 'extensions.zotero-skill-task.mcp.token';
-/** 访问凭据开关（可选项，默认关闭；关闭时 MCP 接口无需鉴权） */
+/** 访问凭据开关（默认启用；用户可显式关闭） */
 const PREF_MCP_TOKEN_ENABLED = 'extensions.zotero-skill-task.mcp.tokenEnabled';
 /** 响应的 MCP 协议版本 */
-const MCP_PROTOCOL_VERSION = '2024-11-05';
+const MCP_PROTOCOL_VERSION = '2025-11-25';
 /** JSON-RPC 错误码 */
 const ERR_PARSE = -32700;
 const ERR_METHOD_NOT_FOUND = -32601;
@@ -235,10 +236,24 @@ function collectChildNotes(
 
 /** 探测 Connector Server 端口（取不到为 null，绝不写回 pref） */
 function detectServerPort(): number | null {
+  const Z = zoteroGlobal();
+  // 优先读取 Zotero.Server 实际监听端口，而不是只看配置 pref。
+  // server.js 暴露的 port getter 返回 HttpServer.identity.primaryPort。
   try {
-    const Z = zoteroGlobal();
-    const p = Z?.Prefs?.get?.('httpServer.port', true);
-    return typeof p === 'number' && p > 0 ? p : null;
+    const actual = Number(Z?.Server?.port);
+    if (Number.isInteger(actual) && actual > 0 && actual <= 65535) {
+      return actual;
+    }
+  } catch {
+    // Server 尚未初始化时 port getter 会抛错，继续读配置值。
+  }
+  try {
+    // httpServer.port 是 Zotero 自身 pref，不能传 global=true；
+    // 否则会错误读取名为 "httpServer.port" 的绝对 pref。
+    const configured = Number(Z?.Prefs?.get?.('httpServer.port'));
+    return Number.isInteger(configured) && configured > 0 && configured <= 65535
+      ? configured
+      : null;
   } catch {
     return null;
   }
@@ -334,6 +349,8 @@ export class McpServer implements IMcpServer {
     }
     try {
       if (v) {
+        // 默认启用访问凭据时，启服务前确保 token 已经存在。
+        if (this.isTokenEnabled()) this.ensureToken();
         this.register();
       } else {
         this.unregister();
@@ -375,15 +392,16 @@ export class McpServer implements IMcpServer {
     return token;
   }
 
-  /** 访问凭据是否启用（可选项，默认关闭） */
+  /** 访问凭据是否启用（默认启用） */
   isTokenEnabled(): boolean {
-    return !!prefs.get(PREF_MCP_TOKEN_ENABLED, false);
+    return !!prefs.get(PREF_MCP_TOKEN_ENABLED, true);
   }
 
   /** 设置访问凭据开关 */
   setTokenEnabled(v: boolean): void {
     try {
       prefs.set(PREF_MCP_TOKEN_ENABLED, v);
+      if (v) this.ensureToken();
     } catch (e) {
       throw new Error(`访问凭据开关保存失败：${errMsg(e)}`);
     }
@@ -393,11 +411,23 @@ export class McpServer implements IMcpServer {
   /**
    * 服务状态：绝不抛错（端口探测失败返回 null，由调用方展示为"未知"）。
    */
-  getStatus(): { enabled: boolean; path: string; port: number | null } {
+  getStatus(): {
+    enabled: boolean;
+    host: string;
+    path: string;
+    port: number | null;
+    url: string | null;
+    lanAccessible: boolean;
+  } {
+    const port = detectServerPort();
     return {
       enabled: this.isEnabled(),
+      host: MCP_HOST,
       path: MCP_PATH,
-      port: detectServerPort(),
+      port,
+      url: port ? `http://${MCP_HOST}:${port}${MCP_PATH}` : null,
+      // Zotero Connector Server 是 loopback 服务，并校验 Host 为 localhost/127.0.0.1/::1。
+      lanAccessible: false,
     };
   }
 
@@ -431,9 +461,18 @@ export class McpServer implements IMcpServer {
       }
     }
     // ③ JSON-RPC 解析
+    // Zotero.Server 对 application/json 已在进入 endpoint.init() 前执行 JSON.parse，
+    // 因此 requestData.data 通常已经是对象；仅对字符串兜底解析。
     let rpc: any;
     try {
-      rpc = JSON.parse(String(requestData?.data ?? ''));
+      const incoming = requestData?.data;
+      if (incoming && typeof incoming === 'object') {
+        rpc = incoming;
+      } else if (typeof incoming === 'string' && incoming.trim()) {
+        rpc = JSON.parse(incoming);
+      } else {
+        throw new Error('Missing JSON-RPC payload');
+      }
     } catch {
       return [
         400,
@@ -459,6 +498,8 @@ export class McpServer implements IMcpServer {
     }
     try {
       switch (method) {
+        case 'ping':
+          return this.jsonOk(id, {});
         case 'initialize':
           return this.jsonOk(id, {
             protocolVersion: MCP_PROTOCOL_VERSION,

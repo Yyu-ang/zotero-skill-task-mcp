@@ -240,7 +240,7 @@ export function openSkillTaskPanel(rootURI: string): void {
   }
 
   win.open(
-    rootURI + 'content/panel.html',
+    'chrome://zotero-skill-task/content/panel.html',
     '_blank',
     'chrome,width=760,height=560,resizable,centerscreen'
   );

@@ -308,9 +308,15 @@ export interface IMcpServer {
   setTokenEnabled(v: boolean): void;
   getStatus(): {
     enabled: boolean;
+    /** Zotero Connector Server 固定为 loopback 主机 */
+    host: string;
     path: string;
-    /** Zotero 内建服务器端口（Connector Server）；null 表示未知 */
+    /** Zotero 内建服务器实际监听端口；null 表示未知 */
     port: number | null;
+    /** 完整 MCP endpoint；端口未知时为 null */
+    url: string | null;
+    /** 当前实现是否可直接通过局域网访问 */
+    lanAccessible: boolean;
   };
 }
 

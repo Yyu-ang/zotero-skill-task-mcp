@@ -463,6 +463,11 @@ function applyStaticI18n(): void {
 // ────────────────────────── 初始化 ──────────────────────────
 
 function init(): void {
+  const bootStatus = document.getElementById('boot-status') as HTMLElement | null;
+  if (bootStatus) {
+    bootStatus.textContent = '面板脚本已启动，正在连接插件核心…';
+  }
+
   // 需求单 需求1：JS 侧 Fluent 国际化（文案唯一来源为 ftl，构建时提取）
   initLocale();
   // panel.xhtml 里的静态文案（title/按钮/选项卡/降级提示）同样走 getString
@@ -492,6 +497,7 @@ function init(): void {
     // 插件核心未就绪：降级显示提示，主界面隐藏；若 startup 留下具体错误则一并展示。
     $<HTMLDivElement>('main-ui').hidden = true;
     $<HTMLDivElement>('not-ready').hidden = false;
+    if (bootStatus) bootStatus.hidden = true;
     try {
       const startupError = String((Zotero as any)?.SkillTaskStartupError ?? '').trim();
       if (startupError) {
@@ -506,6 +512,7 @@ function init(): void {
     return;
   }
   $<HTMLSpanElement>('ver').textContent = `v${api.version}`;
+  if (bootStatus) bootStatus.hidden = true;
   // 先按最终布局占位骨架屏，再异步刷新真实数据
   renderSkeleton('skills');
   renderSkeleton('tasks');
@@ -2202,14 +2209,18 @@ function renderMcp(): void {
   const mcp = api.mcp;
 
   let enabled = false;
-  let path = '/skilltask/mcp';
+  let host = '127.0.0.1';
   let port: number | null = null;
+  let url: string | null = null;
+  let lanAccessible = false;
   let token = '';
   try {
     const st = mcp.getStatus();
     enabled = st.enabled;
-    path = st.path;
+    host = st.host;
     port = st.port;
+    url = st.url;
+    lanAccessible = st.lanAccessible;
     token = mcp.ensureToken();
   } catch (e) {
     showError(getString('panel-err-mcp-status-failed', { error: errMsg(e) }));
@@ -2244,21 +2255,38 @@ function renderMcp(): void {
   toggleRow.append(el('span', '', getString(enabled ? 'panel-mcp-enabled' : 'panel-mcp-disabled')));
   card.append(toggleRow);
 
+  // 主机与实际监听端口
+  const hostRow = el('div', 'mcp-row');
+  hostRow.append(el('span', 'k', getString('panel-mcp-host')));
+  hostRow.append(el('div', 'url-box', host));
+  card.append(hostRow);
+
+  const portRow = el('div', 'mcp-row');
+  portRow.append(el('span', 'k', getString('panel-mcp-port')));
+  portRow.append(el('div', 'url-box', port !== null ? String(port) : '—'));
+  card.append(portRow);
+
   // 服务端点（一键复制）
   const urlRow = el('div', 'mcp-row');
   urlRow.append(el('span', 'k', getString('panel-mcp-endpoint')));
-  if (port !== null) {
-    const url = `http://127.0.0.1:${port}${path}`;
+  if (url) {
     const urlBox = el('div', 'url-box', url);
     urlBox.title = getString('panel-mcp-endpoint-title');
     urlRow.append(urlBox);
     urlRow.append(
-      opBtn(getString('panel-action-copy'), (b) => copyText(url, b), { icon: 'copy', title: getString('panel-mcp-copy-endpoint-title') })
+      opBtn(getString('panel-action-copy'), (b) => copyText(url!, b), { icon: 'copy', title: getString('panel-mcp-copy-endpoint-title') })
     );
   } else {
     urlRow.append(el('span', 'muted', getString('panel-mcp-port-unknown')));
   }
   card.append(urlRow);
+
+  if (!lanAccessible) {
+    const localOnly = el('div', 'notice');
+    localOnly.append(iconEl('alert-circle', 'ic'));
+    localOnly.append(document.createTextNode(getString('panel-mcp-local-only')));
+    card.append(localOnly);
+  }
 
   // token 显示 + 复制 + 重新生成
   const tokenRow = el('div', 'mcp-row');

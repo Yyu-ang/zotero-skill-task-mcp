@@ -19,6 +19,8 @@ const panel = read('addon/content/panel.html');
 const prefsXhtml = read('addon/content/preferences.xhtml');
 const prefsTs = read('src/preferences.ts');
 const uiTs = read('src/ui.ts');
+const coreTs = read('src/core.ts');
+const mcpTs = read('src/mcpServer.ts');
 
 const includeSrc = 'chrome://zotero/content/include.js';
 const panelScript = 'src="panel.js"';
@@ -40,12 +42,26 @@ assert.ok(
   'standalone panel must expose a windowtype for focus/reuse'
 );
 assert.ok(
-  uiTs.includes("rootURI + 'content/panel.html'"),
-  'UI launcher must open panel.html'
+  uiTs.includes("'chrome://zotero-skill-task/content/panel.html'"),
+  'UI launcher must open the panel through the registered chrome URL'
 );
 assert.ok(
   uiTs.includes('win.open(') && !uiTs.includes("content/panel.xhtml"),
   'UI launcher must use window.open for the standalone HTML panel'
+);
+assert.ok(
+  panel.includes('id="boot-status"'),
+  'panel shell must expose visible boot diagnostics instead of failing to a blank window'
+);
+assert.ok(
+  bootstrap.includes('aomStartup.registerChrome') &&
+    bootstrap.includes('["content", "zotero-skill-task"'),
+  'bootstrap must register a stable chrome:// content package'
+);
+assert.ok(
+  coreTs.includes("src: 'chrome://zotero-skill-task/content/preferences.xhtml'") &&
+    coreTs.includes("scripts: ['chrome://zotero-skill-task/content/preferences.js']"),
+  'PreferencePane resources must load through chrome:// URLs'
 );
 
 assert.match(
@@ -60,6 +76,32 @@ assert.ok(
 assert.ok(
   !prefsTs.includes("document.addEventListener('DOMContentLoaded', init)"),
   'preference pane must not depend on the parent Preferences DOMContentLoaded event'
+);
+
+assert.ok(
+  !prefsTs.includes("Prefs.get('httpServer.port', true)") &&
+    !prefsTs.includes("Prefs.set('httpServer.port', v, true)"),
+  'preferences must not treat Zotero built-in httpServer.port as a global plugin pref'
+);
+assert.ok(
+  mcpTs.includes('Z?.Server?.port') &&
+    mcpTs.includes("Z?.Prefs?.get?.('httpServer.port')") &&
+    !mcpTs.includes("Prefs?.get?.('httpServer.port', true)"),
+  'MCP status must report the actual Zotero server port with a correct pref fallback'
+);
+
+assert.ok(
+  mcpTs.includes("const MCP_PROTOCOL_VERSION = '2025-11-25'"),
+  'MCP endpoint must advertise the implemented 2025 Streamable HTTP compatibility revision'
+);
+assert.ok(
+  mcpTs.includes("typeof incoming === 'object'") &&
+    !mcpTs.includes("JSON.parse(String(requestData?.data"),
+  'MCP endpoint must accept Zotero.Server pre-parsed application/json payloads'
+);
+assert.ok(
+  mcpTs.includes("prefs.get(PREF_MCP_TOKEN_ENABLED, true)"),
+  'MCP access-token protection must default to enabled'
 );
 
 for (const required of [

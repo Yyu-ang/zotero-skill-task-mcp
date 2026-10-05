@@ -148,11 +148,11 @@ export class PluginCore {
         const locale = String((Zotero as any).locale || '');
         this.prefPaneID = await PP.register({
           pluginID: this.id,
-          src: this.rootURI + 'content/preferences.xhtml',
+          src: 'chrome://zotero-skill-task/content/preferences.xhtml',
           label: locale.toLowerCase().startsWith('zh') ? '技能任务' : 'Skill Task',
-          image: this.rootURI + 'content/icons/icon-48.png',
+          image: 'chrome://zotero-skill-task/content/icons/icon-48.png',
           defaultXUL: true,
-          scripts: [this.rootURI + 'content/preferences.js'],
+          scripts: ['chrome://zotero-skill-task/content/preferences.js'],
         });
         log(`Preference pane registered: ${this.prefPaneID}`);
       } else {

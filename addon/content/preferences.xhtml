@@ -16,6 +16,8 @@
       xmlns:html="http://www.w3.org/1999/xhtml"
       onload="if (window.ZoteroSkillTaskPreferences) window.ZoteroSkillTaskPreferences.init();">
 
+  <description id="st-prefs-boot">设置界面已加载，正在初始化…</description>
+
   <groupbox>
     <label><html:h2 data-l10n-id="skill-task-prefs-mcp-section">MCP 服务</html:h2></label>
 
@@ -33,13 +35,14 @@
     </hbox>
 
     <hbox align="center">
-      <label data-l10n-id="skill-task-prefs-mcp-port" for="st-mcp-port">端口（修改后需重启 Zotero）</label>
-      <html:input id="st-mcp-port" type="number" min="1" max="65535" step="1" style="width: 6em;"/>
+      <label data-l10n-id="skill-task-prefs-mcp-port">实际端口</label>
+      <label id="st-mcp-port-value" style="font-family: monospace;">—</label>
     </hbox>
+    <description data-l10n-id="skill-task-prefs-mcp-local-only">当前复用 Zotero Connector Server，仅支持本机 127.0.0.1 访问；不支持直接通过局域网 IP 连接。</description>
 
     <hbox align="center">
       <checkbox id="st-mcp-token-enabled" native="true"
-                data-l10n-id="skill-task-prefs-token-enable" label="启用访问凭据（可选）"/>
+                data-l10n-id="skill-task-prefs-token-enable" label="启用访问凭据（建议保持开启）"/>
     </hbox>
 
     <hbox align="center" id="st-mcp-token-row">
@@ -52,7 +55,7 @@
     </hbox>
     <html:input id="st-mcp-token-value" type="text" readonly="readonly" hidden="hidden"/>
 
-    <description data-l10n-id="skill-task-prefs-token-hint">凭据为可选项；不启用时 MCP 接口无需鉴权。启用后重新生成将使旧凭据立即失效，请勿记入日志或随意分享。</description>
+    <description data-l10n-id="skill-task-prefs-token-hint">访问凭据默认启用；关闭后 MCP 接口将无需鉴权。重新生成会使旧凭据立即失效，请勿记入日志或随意分享。</description>
     <description id="st-err" hidden="true" style="color: #c00;"/>
   </groupbox>
 
