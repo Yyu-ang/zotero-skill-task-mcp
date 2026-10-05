@@ -569,6 +569,14 @@ export class McpServer implements IMcpServer {
   ): [number, string, string] | null {
     const id = rpc?.id ?? null;
 
+    if (envelopeVersion && headerVersion && envelopeVersion !== headerVersion) {
+      return this.jsonErrStatus(
+        id,
+        400,
+        HEADER_MISMATCH,
+        'MCP-Protocol-Version header disagrees with request envelope'
+      );
+    }
     if (envelopeVersion && envelopeVersion !== MCP_MODERN_PROTOCOL_VERSION) {
       return this.jsonErrStatus(
         id,
@@ -620,15 +628,6 @@ export class McpServer implements IMcpServer {
         'MCP-Protocol-Version header is absent'
       );
     }
-    if (headerVersion !== envelopeVersion) {
-      return this.jsonErrStatus(
-        id,
-        400,
-        HEADER_MISMATCH,
-        'MCP-Protocol-Version header disagrees with request envelope'
-      );
-    }
-
     // 通知在 2026 协议中免标准 header presence 校验。
     if (rpc?.id === undefined || rpc?.id === null) return null;
 
