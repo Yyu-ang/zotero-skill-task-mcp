@@ -13,7 +13,8 @@
     "test": "node scripts/test-deliverables.mjs && node scripts/test-ui-wiring.mjs",
     "dev": "node scripts/serve.mjs",
     "start": "node scripts/serve.mjs",
-    "build:dev": "node scripts/build.mjs --dev"
+    "build:dev": "node scripts/build.mjs --dev",
+    "release:publish": "node scripts/release.mjs --publish"
   },
   "type": "module",
   "version": "0.4.5"
