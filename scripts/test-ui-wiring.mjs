@@ -169,6 +169,21 @@ assert.ok(
     skillStoreTs.includes('copySkillAssets(src.id, sg.id)'),
   'skill assets must be persisted in per-skill SKILL.md/references directories'
 );
+
+assert.ok(
+  skillStoreTs.includes('function normalizeUploadBytes(') &&
+    !skillStoreTs.includes('bytes instanceof Uint8Array') &&
+    skillStoreTs.includes('new Uint8Array(src.buffer, offset, byteLength)'),
+  'skill/reference uploads must accept TypedArrays from another window realm'
+);
+assert.ok(
+  panelTs.includes('function parseSkillMarkdownMetadata(') &&
+    panelTs.includes("readFrontMatterField('name')") &&
+    panelTs.includes("readFrontMatterField('description')") &&
+    panelTs.includes('nameInput.value = metadata.name') &&
+    panelTs.includes('descInput.value = metadata.description'),
+  'SKILL.md upload must parse and auto-fill name and description'
+);
 assert.ok(
   mcpTs.includes('skillMarkdown') &&
     mcpTs.includes('referenceFiles') &&
