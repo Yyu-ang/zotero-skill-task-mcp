@@ -130,6 +130,12 @@ assert.ok(
     utilsTs.includes('deliverableFileBytes: 200 * 1024 * 1024'),
   'default file limit must be 200 MB'
 );
+assert.ok(
+  !utilsTs.includes('deliverableFileBytesMax') &&
+    !prefsXhtml.includes('max="200"') &&
+    !mcpTs.includes('maximum: 209715200'),
+  '200 MB is a default, not a hard cap'
+);
 
 for (const required of [
   'ctx.Zotero = Zotero',
