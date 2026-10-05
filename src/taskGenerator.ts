@@ -21,6 +21,7 @@ import {
 } from './types';
 import { log, error } from './utils';
 import { traced } from './utils/trace';
+import { findChildAttachmentsByFilename } from './attachments';
 
 /** 扫描分块大小：每块从 Zotero 一次加载的条目数 */
 const SCAN_CHUNK_SIZE = 200;
@@ -34,6 +35,7 @@ interface ScanCounters {
   skipped: number;
   waitingMaterial: number;
   promoted: number;
+  completedExisting: number;
 }
 
 /** 全零扫描结果 */
@@ -45,6 +47,7 @@ function emptyScanResult(skillGroupId: string): ScanResult {
     skipped: 0,
     waitingMaterial: 0,
     promoted: 0,
+    completedExisting: 0,
   };
 }
 
@@ -265,7 +268,8 @@ export class TaskGenerator implements ITaskGenerator {
     log(
       `[TaskGenerator] 扫描完成「${sg.name}」: scanned=${result.scanned} ` +
         `created=${result.created} skipped=${result.skipped} ` +
-        `waitingMaterial=${result.waitingMaterial} promoted=${result.promoted}`,
+        `waitingMaterial=${result.waitingMaterial} promoted=${result.promoted} ` +
+        `completedExisting=${result.completedExisting}`,
     );
     return result;
   }
@@ -365,7 +369,60 @@ export class TaskGenerator implements ITaskGenerator {
       const inScope = await this.skillGroups.matchesScope(sg, item);
       if (!inScope) return;
 
-      // 2. 唯一性去重：同一「技能组 × 条目」最多一条有效任务
+      // 2. 已完成任务保持幂等：重复扫描不为同一技能组×条目再造任务
+      const latest = this.tasks.findLatestBySkillAndItem(sg.id, itemKey);
+      if (latest?.status === 'done') {
+        counters.skipped++;
+        return;
+      }
+
+      // 3. 若配置了固定附件名 + skip 策略，已有同名附件直接视为完成
+      const existingAttachment = await this.findExistingDeliverableAttachment(sg, item);
+      if (existingAttachment) {
+        const d = sg.deliverable;
+        const targetName =
+          d.type === 'file'
+            ? d.targetFileName
+            : d.type === 'markdown' && d.target === 'file'
+              ? d.targetFileName
+              : undefined;
+        if (!targetName) return;
+        const dtype = d.type === 'markdown' ? 'markdown' : 'file';
+        const existingActive = this.tasks.findActiveBySkillAndItem(sg.id, itemKey);
+        if (existingActive) {
+          await this.tasks.complete(existingActive.id, {
+            noteKey: null,
+            deliverableType: dtype,
+            deliverableRef: targetName,
+            attachmentKey:
+              typeof existingAttachment.key === 'string'
+                ? existingAttachment.key
+                : null,
+          });
+        } else {
+          await this.tasks.createCompleted(
+            {
+              skillGroupId: sg.id,
+              skillGroupVersion: sg.version,
+              instructionSnapshot: sg.instruction,
+              itemKey,
+            },
+            {
+              noteKey: null,
+              deliverableType: dtype,
+              deliverableRef: targetName,
+              attachmentKey:
+                typeof existingAttachment.key === 'string'
+                  ? existingAttachment.key
+                  : null,
+            }
+          );
+        }
+        counters.completedExisting++;
+        return;
+      }
+
+      // 4. 唯一性去重：同一「技能组 × 条目」最多一条有效任务
       const existing = this.tasks.findActiveBySkillAndItem(sg.id, itemKey);
       if (existing) {
         if (existing.status === 'waiting-material') {
@@ -382,7 +439,7 @@ export class TaskGenerator implements ITaskGenerator {
         return;
       }
 
-      // 3. 材料判定 → 创建任务
+      // 5. 材料判定 → 创建任务
       const ready = await this.materialsReady(sg, item);
       const status = ready ? 'pending' : 'waiting-material';
       await this.tasks.create({
@@ -400,6 +457,36 @@ export class TaskGenerator implements ITaskGenerator {
     } catch (e) {
       error('[TaskGenerator] 单条处理失败，已跳过:', sg.id, item?.key, e);
     }
+  }
+
+  /**
+   * 仅当交付物会挂成附件、配置了固定目标文件名，且同名策略为 skip 时，
+   * 扫描才可根据既有附件直接判定任务已完成。
+   */
+  private async findExistingDeliverableAttachment(
+    sg: SkillGroup,
+    item: any
+  ): Promise<any | null> {
+    const d = sg.deliverable;
+    const targetName =
+      d.type === 'file'
+        ? d.targetFileName
+        : d.type === 'markdown' && d.target === 'file'
+          ? d.targetFileName
+          : undefined;
+    const attach =
+      d.type === 'file'
+        ? !!d.attachToItem
+        : d.type === 'markdown' && d.target === 'file'
+          ? !!d.attachToItem
+          : false;
+    const policy =
+      d.type === 'file' || (d.type === 'markdown' && d.target === 'file')
+        ? d.existingAttachmentPolicy ?? 'skip'
+        : undefined;
+    if (!attach || !targetName || policy !== 'skip') return null;
+    const matches = await findChildAttachmentsByFilename(item, targetName);
+    return matches[0] ?? null;
   }
 
   /**
@@ -450,15 +537,21 @@ export class TaskGenerator implements ITaskGenerator {
         skipped: 0,
         waitingMaterial: 0,
         promoted: 0,
+        completedExisting: 0,
       };
       for (const sg of this.enabledSkillGroups()) {
         await this.processItemForSkillGroup(sg, item, counters);
       }
-      if (counters.created > 0 || counters.promoted > 0) {
+      if (
+        counters.created > 0 ||
+        counters.promoted > 0 ||
+        counters.completedExisting > 0
+      ) {
         log(
           `[TaskGenerator] 新增条目 ${item.key}: ` +
             `created=${counters.created} promoted=${counters.promoted} ` +
-            `waitingMaterial=${counters.waitingMaterial}`,
+            `waitingMaterial=${counters.waitingMaterial} ` +
+            `completedExisting=${counters.completedExisting}`,
         );
       }
       return;
@@ -486,23 +579,26 @@ export class TaskGenerator implements ITaskGenerator {
     }
     if (!parent || !isParentItem(parent)) return;
 
-    const waiting = this.tasks
-      .list({ status: 'waiting-material' })
-      .filter((t) => t.itemKey === parent.key);
-    for (const task of waiting) {
-      try {
-        const sg = this.skillGroups.get(task.skillGroupId);
-        // 技能组已停用/归档：按 §6 不再推进其任务
-        if (!sg || sg.archived || !sg.enabled) continue;
-        if (await this.materialsReady(sg, parent)) {
-          const promoted = await this.tasks.promoteToPending(task.id);
-          if (promoted) {
-            log('[TaskGenerator] 材料后到，任务已晋升:', task.id);
-          }
-        }
-      } catch (e) {
-        error('[TaskGenerator] 附件触发的晋升失败，已跳过:', task.id, e);
-      }
+    const counters: ScanCounters = {
+      created: 0,
+      skipped: 0,
+      waitingMaterial: 0,
+      promoted: 0,
+      completedExisting: 0,
+    };
+    for (const sg of this.enabledSkillGroups()) {
+      await this.processItemForSkillGroup(sg, parent, counters);
+    }
+    if (
+      counters.promoted > 0 ||
+      counters.created > 0 ||
+      counters.completedExisting > 0
+    ) {
+      log(
+        `[TaskGenerator] 附件变更触发父条目重判 ${parent.key}: ` +
+          `created=${counters.created} promoted=${counters.promoted} ` +
+          `completedExisting=${counters.completedExisting}`
+      );
     }
   }
 }
