@@ -212,17 +212,36 @@ export function removeFluent(window: Window): void {
 }
 
 /**
- * 打开技能任务管理面板（当前为占位页面，功能开发中）。
+ * 打开技能任务管理面板。
+ *
+ * 这是一个独立 HTML chrome window，不再走 openDialog + XHTML。
+ * 对齐 Zotero 自身 runJS.html 的打开方式：先按 windowtype 聚焦已有窗口，
+ * 否则用主窗口 window.open() 创建新的 chrome HTML 窗口。
  */
 export function openSkillTaskPanel(rootURI: string): void {
-  const win = Zotero.getMainWindows()[0] as any;
+  try {
+    const existing = (globalThis as any).Services?.wm?.getMostRecentWindow?.(
+      'zotero-skill-task-panel'
+    );
+    if (existing && !existing.closed) {
+      existing.focus();
+      return;
+    }
+  } catch {
+    // ignore and create a new window
+  }
+
+  const win =
+    (Zotero as any).getMainWindow?.() ??
+    (Zotero.getMainWindows?.()[0] as any);
   if (!win) {
     log('No main window available, cannot open panel');
     return;
   }
-  win.openDialog(
-    rootURI + 'content/panel.xhtml',
-    'zotero-skill-task-panel',
-    'chrome,resizable,centerscreen,width=760,height=560'
+
+  win.open(
+    rootURI + 'content/panel.html',
+    '_blank',
+    'chrome,width=760,height=560,resizable,centerscreen'
   );
 }
