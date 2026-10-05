@@ -213,6 +213,19 @@
       min-width: 190px; padding: 5px 8px;
       border: 1px solid var(--border); border-radius: 6px;
       background: var(--input-bg); color: var(--text);
+      font: inherit; line-height: 1.4;
+    }
+    .field-inline select option {
+      background: var(--input-bg); color: var(--text);
+    }
+    .field-inline.conflict-policy {
+      align-items: stretch; flex-direction: column; gap: 4px;
+    }
+    .field-inline.conflict-policy select {
+      width: 100%; min-height: 32px; cursor: pointer;
+    }
+    .field-inline.conflict-policy select:disabled {
+      opacity: 0.55; cursor: not-allowed;
     }
     .coll-list {
       max-height: 180px; overflow-y: auto;

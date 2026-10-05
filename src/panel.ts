@@ -1384,13 +1384,20 @@ function renderForm(wrap: HTMLElement): void {
   fileNameInput.placeholder = getString('panel-form-target-file-name-ph');
   fileNameInput.value =
     curDel.type === 'file' ? curDel.targetFileName ?? '' : '';
-  const filePolicyRow = el('div', 'field-inline');
+  const filePolicyRow = el('div', 'field-inline conflict-policy');
   filePolicyRow.append(el('span', 'muted', getString('panel-form-existing-attachment')));
   const filePolicy = el('select') as HTMLSelectElement;
-  filePolicy.append(
-    new Option(getString('panel-form-existing-skip'), 'skip'),
-    new Option(getString('panel-form-existing-overwrite'), 'overwrite')
+  filePolicy.setAttribute(
+    'aria-label',
+    getString('panel-form-existing-attachment')
   );
+  const fileSkip = document.createElement('option');
+  fileSkip.value = 'skip';
+  fileSkip.textContent = getString('panel-form-existing-skip');
+  const fileOverwrite = document.createElement('option');
+  fileOverwrite.value = 'overwrite';
+  fileOverwrite.textContent = getString('panel-form-existing-overwrite');
+  filePolicy.append(fileSkip, fileOverwrite);
   filePolicy.value =
     curDel.type === 'file' ? curDel.existingAttachmentPolicy ?? 'skip' : 'skip';
   filePolicyRow.append(filePolicy);
@@ -1430,13 +1437,20 @@ function renderForm(wrap: HTMLElement): void {
     curDel.type === 'markdown' && curDel.target === 'file'
       ? curDel.targetFileName ?? ''
       : '';
-  const mdPolicyRow = el('div', 'field-inline');
+  const mdPolicyRow = el('div', 'field-inline conflict-policy');
   mdPolicyRow.append(el('span', 'muted', getString('panel-form-existing-attachment')));
   const mdPolicy = el('select') as HTMLSelectElement;
-  mdPolicy.append(
-    new Option(getString('panel-form-existing-skip'), 'skip'),
-    new Option(getString('panel-form-existing-overwrite'), 'overwrite')
+  mdPolicy.setAttribute(
+    'aria-label',
+    getString('panel-form-existing-attachment')
   );
+  const mdSkip = document.createElement('option');
+  mdSkip.value = 'skip';
+  mdSkip.textContent = getString('panel-form-existing-skip');
+  const mdOverwrite = document.createElement('option');
+  mdOverwrite.value = 'overwrite';
+  mdOverwrite.textContent = getString('panel-form-existing-overwrite');
+  mdPolicy.append(mdSkip, mdOverwrite);
   mdPolicy.value =
     curDel.type === 'markdown' && curDel.target === 'file'
       ? curDel.existingAttachmentPolicy ?? 'skip'
@@ -1452,11 +1466,13 @@ function renderForm(wrap: HTMLElement): void {
     )?.value;
     fileOpts.hidden = v !== 'file';
     mdOpts.hidden = v !== 'markdown';
-    filePolicyRow.hidden = !attachFile.checked;
+    // 策略控件保持可见：未开启自动挂附件时禁用，而不是整行隐藏。
+    filePolicy.disabled = !attachFile.checked;
     const mdToFile = v === 'markdown' && mdTargetFile.checked;
     rowAttachMd.hidden = !mdToFile;
     mdFileNameInput.hidden = !mdToFile;
-    mdPolicyRow.hidden = !mdToFile || !attachMd.checked;
+    mdPolicyRow.hidden = !mdToFile;
+    mdPolicy.disabled = !attachMd.checked;
   };
   for (const r of [delNote, delFile, delMd, mdTargetNote, mdTargetFile]) {
     r.addEventListener('change', syncDelOpts);
