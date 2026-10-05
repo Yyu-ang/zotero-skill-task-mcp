@@ -12,5 +12,5 @@ pref("extensions.zotero-skill-task.mcp.tokenEnabled", false);
 // 任务领取租约时长（分钟），默认 30；设置页可改，实时生效
 pref("extensions.zotero-skill-task.task.leaseMinutes", 30);
 
-// 文件交付物大小上限（MB），默认 200，硬上限 200；设置页可改，实时生效
+// 文件交付物大小上限（MB），默认 200；设置页可改为更高值，实时生效
 pref("extensions.zotero-skill-task.deliverable.maxFileMB", 200);
