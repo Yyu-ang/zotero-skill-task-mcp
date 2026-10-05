@@ -458,9 +458,18 @@ export class McpServer implements IMcpServer {
       }
     }
     // ③ JSON-RPC 解析
+    // Zotero.Server 对 application/json 已在进入 endpoint.init() 前执行 JSON.parse，
+    // 因此 requestData.data 通常已经是对象；仅对字符串兜底解析。
     let rpc: any;
     try {
-      rpc = JSON.parse(String(requestData?.data ?? ''));
+      const incoming = requestData?.data;
+      if (incoming && typeof incoming === 'object') {
+        rpc = incoming;
+      } else if (typeof incoming === 'string' && incoming.trim()) {
+        rpc = JSON.parse(incoming);
+      } else {
+        throw new Error('Missing JSON-RPC payload');
+      }
     } catch {
       return [
         400,
