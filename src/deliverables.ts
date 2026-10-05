@@ -81,6 +81,22 @@ export function assertValidDeliverable(input: unknown): SkillDeliverable {
       }
       out.maxBytes = fd.maxBytes;
     }
+    if (fd.targetFileName !== undefined) {
+      out.targetFileName = sanitizeFileName(fd.targetFileName);
+      const ext = getExtension(out.targetFileName);
+      if (!resolveAllowedExtensions(out).includes(ext)) {
+        throw new Error(`交付物配置无效：目标文件扩展名 .${ext} 不在允许列表中`);
+      }
+    }
+    if (fd.existingAttachmentPolicy !== undefined) {
+      if (
+        fd.existingAttachmentPolicy !== 'overwrite' &&
+        fd.existingAttachmentPolicy !== 'skip'
+      ) {
+        throw new Error('交付物配置无效：同名附件策略须为 overwrite 或 skip');
+      }
+      out.existingAttachmentPolicy = fd.existingAttachmentPolicy;
+    }
     return out;
   }
   if (d.type === 'markdown') {
@@ -94,6 +110,24 @@ export function assertValidDeliverable(input: unknown): SkillDeliverable {
         throw new Error('交付物配置无效：attachToItem 须为布尔值');
       }
       out.attachToItem = md.attachToItem;
+    }
+    if (md.targetFileName !== undefined) {
+      if (md.target !== 'file') {
+        throw new Error('交付物配置无效：仅 Markdown→文件 可设置目标文件名');
+      }
+      out.targetFileName = sanitizeFileName(md.targetFileName);
+      if (getExtension(out.targetFileName) !== 'md') {
+        throw new Error('交付物配置无效：Markdown 目标文件名必须以 .md 结尾');
+      }
+    }
+    if (md.existingAttachmentPolicy !== undefined) {
+      if (
+        md.existingAttachmentPolicy !== 'overwrite' &&
+        md.existingAttachmentPolicy !== 'skip'
+      ) {
+        throw new Error('交付物配置无效：同名附件策略须为 overwrite 或 skip');
+      }
+      out.existingAttachmentPolicy = md.existingAttachmentPolicy;
     }
     return out;
   }
@@ -315,9 +349,11 @@ export function validateSubmitParams(
     }
     // target === 'file'：存为 .md 文件
     const rawName =
-      typeof params?.fileName === 'string' && params.fileName.trim()
-        ? params.fileName
-        : `task-${taskId}.md`;
+      typeof d.targetFileName === 'string' && d.targetFileName.trim()
+        ? d.targetFileName
+        : typeof params?.fileName === 'string' && params.fileName.trim()
+          ? params.fileName
+          : `task-${taskId}.md`;
     let fileName: string;
     try {
       fileName = sanitizeFileName(rawName);
@@ -330,7 +366,10 @@ export function validateSubmitParams(
     return { ok: true, kind: 'markdown-file', fileName, text: raw };
   }
   // d.type === 'file'
-  const rawName = params?.fileName;
+  const rawName =
+    typeof d.targetFileName === 'string' && d.targetFileName.trim()
+      ? d.targetFileName
+      : params?.fileName;
   const rawB64 = params?.contentBase64;
   if (typeof rawName !== 'string' || !rawName.trim()) {
     return { ok: false, error: 'missing-fileName' };
