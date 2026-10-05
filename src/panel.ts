@@ -55,6 +55,8 @@ const ICONS: Record<string, string> = {
     '<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>',
   search:
     '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
+  'external-link':
+    '<path d="M14 3h7v7"/><path d="M10 14L21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/>',
   x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
   clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
   inbox:
@@ -165,6 +167,31 @@ function getAPI(): SkillTaskAPI | undefined {
   } catch {
     return undefined;
   }
+}
+
+function resolveTaskItem(itemKey: string): any | null {
+  try {
+    const Z: any = Zotero as any;
+    const libs = Z?.Libraries?.getAll?.() ?? [];
+    for (const lib of libs) {
+      const item = Z?.Items?.getByLibraryAndKey?.(lib.libraryID, itemKey);
+      if (item && item !== false && item.isRegularItem?.()) return item;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+async function revealTaskItem(itemKey: string): Promise<void> {
+  const item = resolveTaskItem(itemKey);
+  if (!item) throw new Error(getString('panel-detail-item-missing'));
+  const Z: any = Zotero as any;
+  const win = Z?.getMainWindow?.();
+  const pane = win?.ZoteroPane ?? Z?.getActiveZoteroPane?.();
+  if (!pane?.selectItem) throw new Error(getString('panel-detail-library-unavailable'));
+  await pane.selectItem(item.id);
+  try { win?.focus?.(); } catch { /* ignore */ }
 }
 
 /** 按 id 取元素（找不到直接抛错，属面板自身 bug） */
@@ -2172,11 +2199,31 @@ function taskDetail(t: Task): HTMLElement {
   const d = el('div', 'task-detail');
   const sg = api?.skillGroups.get(t.skillGroupId);
 
+  const item = resolveTaskItem(t.itemKey);
+  const itemTitle =
+    item?.getField?.('title') || item?.getDisplayTitle?.() || getString('panel-detail-item-untitled');
+
   const grid = el('div', 'detail-grid');
+  grid.append(detailKV(getString('panel-detail-item-title'), String(itemTitle)));
+  grid.append(detailKV(getString('panel-detail-item-key'), t.itemKey, true));
   grid.append(detailKV(getString('panel-detail-sg'), sg?.name ?? getString('panel-detail-sg-deleted')));
   grid.append(detailKV(getString('panel-detail-sg-version'), `v${t.skillGroupVersion}`));
   grid.append(detailKV(getString('panel-detail-attempts'), String(t.attempts)));
   d.append(grid);
+
+  const itemOps = el('div', 'ops');
+  const revealBtn = opBtn(
+    getString('panel-detail-view-in-library'),
+    () => revealTaskItem(t.itemKey),
+    {
+      icon: 'external-link',
+      title: getString('panel-detail-view-in-library-title'),
+      secondary: true,
+    }
+  );
+  revealBtn.disabled = !item;
+  itemOps.append(revealBtn);
+  d.append(itemOps);
 
   // 领取时的指令快照
   const insSec = el('div', 'd-sec');
