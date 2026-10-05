@@ -9,7 +9,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "release": "node scripts/release.mjs",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node scripts/gen-locale.mjs && tsc --noEmit",
     "test": "node scripts/test-deliverables.mjs && node scripts/test-ui-wiring.mjs",
     "dev": "node scripts/serve.mjs",
     "start": "node scripts/serve.mjs",
