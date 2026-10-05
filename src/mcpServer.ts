@@ -529,12 +529,148 @@ export class McpServer implements IMcpServer {
         }),
       ];
     }
-    return this.dispatch(rpc);
+
+    const envelope = modernEnvelope(rpc);
+    const headerVersion = getHeader(requestData?.headers, 'MCP-Protocol-Version').trim();
+    const envelopeVersion =
+      typeof envelope?.[PROTOCOL_VERSION_META_KEY] === 'string'
+        ? String(envelope[PROTOCOL_VERSION_META_KEY])
+        : '';
+    const modernAttempt =
+      headerVersion === MCP_MODERN_PROTOCOL_VERSION ||
+      envelopeVersion === MCP_MODERN_PROTOCOL_VERSION ||
+      (!!headerVersion && headerVersion !== MCP_LEGACY_PROTOCOL_VERSION) ||
+      !!envelopeVersion;
+
+    if (modernAttempt) {
+      const rejection = this.validateModernRequest(
+        rpc,
+        requestData?.headers,
+        envelope,
+        headerVersion,
+        envelopeVersion
+      );
+      if (rejection) return rejection;
+    }
+
+    return this.dispatch(rpc, modernAttempt);
+  }
+
+  /**
+   * MCP 2026-07-28 的每请求 envelope/header 校验。
+   * Legacy 2025 请求完全不经过这里，保证旧客户端兼容。
+   */
+  private validateModernRequest(
+    rpc: any,
+    headers: any,
+    envelope: Record<string, unknown> | null,
+    headerVersion: string,
+    envelopeVersion: string
+  ): [number, string, string] | null {
+    const id = rpc?.id ?? null;
+
+    if (envelopeVersion && envelopeVersion !== MCP_MODERN_PROTOCOL_VERSION) {
+      return this.jsonErrStatus(
+        id,
+        400,
+        UNSUPPORTED_PROTOCOL_VERSION,
+        `Unsupported protocol version: ${envelopeVersion}`,
+        { supportedVersions: [MCP_MODERN_PROTOCOL_VERSION] }
+      );
+    }
+    if (headerVersion && headerVersion !== MCP_MODERN_PROTOCOL_VERSION) {
+      return this.jsonErrStatus(
+        id,
+        400,
+        UNSUPPORTED_PROTOCOL_VERSION,
+        `Unsupported protocol version: ${headerVersion}`,
+        { supportedVersions: [MCP_MODERN_PROTOCOL_VERSION] }
+      );
+    }
+    if (!envelope) {
+      return this.jsonErrStatus(
+        id,
+        400,
+        ERR_INVALID_PARAMS,
+        'Missing MCP 2026 request envelope in params._meta'
+      );
+    }
+    if (envelopeVersion !== MCP_MODERN_PROTOCOL_VERSION) {
+      return this.jsonErrStatus(
+        id,
+        400,
+        ERR_INVALID_PARAMS,
+        `Missing ${PROTOCOL_VERSION_META_KEY}`
+      );
+    }
+    const caps = envelope[CLIENT_CAPABILITIES_META_KEY];
+    if (!caps || typeof caps !== 'object' || Array.isArray(caps)) {
+      return this.jsonErrStatus(
+        id,
+        400,
+        ERR_INVALID_PARAMS,
+        `Missing or invalid ${CLIENT_CAPABILITIES_META_KEY}`
+      );
+    }
+    if (!headerVersion) {
+      return this.jsonErrStatus(
+        id,
+        400,
+        HEADER_MISMATCH,
+        'MCP-Protocol-Version header is absent'
+      );
+    }
+    if (headerVersion !== envelopeVersion) {
+      return this.jsonErrStatus(
+        id,
+        400,
+        HEADER_MISMATCH,
+        'MCP-Protocol-Version header disagrees with request envelope'
+      );
+    }
+
+    // 通知在 2026 协议中免标准 header presence 校验。
+    if (rpc?.id === undefined || rpc?.id === null) return null;
+
+    const method = typeof rpc?.method === 'string' ? rpc.method : '';
+    const methodHeader = getHeader(headers, 'Mcp-Method').trim();
+    if (!methodHeader) {
+      return this.jsonErrStatus(id, 400, HEADER_MISMATCH, 'Mcp-Method header is absent');
+    }
+    if (methodHeader !== method) {
+      return this.jsonErrStatus(
+        id,
+        400,
+        HEADER_MISMATCH,
+        'Mcp-Method header disagrees with JSON-RPC method'
+      );
+    }
+
+    if (method === 'tools/call') {
+      const bodyName =
+        typeof rpc?.params?.name === 'string' ? rpc.params.name : '';
+      const nameHeader = getHeader(headers, 'Mcp-Name').trim();
+      if (!nameHeader) {
+        return this.jsonErrStatus(id, 400, HEADER_MISMATCH, 'Mcp-Name header is absent');
+      }
+      if (nameHeader !== bodyName) {
+        return this.jsonErrStatus(
+          id,
+          400,
+          HEADER_MISMATCH,
+          'Mcp-Name header disagrees with params.name'
+        );
+      }
+    }
+    return null;
   }
 
   // ──────────── JSON-RPC 2.0 分发 ────────────
 
-  private async dispatch(rpc: any): Promise<[number, string, string]> {
+  private async dispatch(
+    rpc: any,
+    modern: boolean
+  ): Promise<[number, string, string]> {
     const method = rpc?.method;
     const id = rpc?.id;
     // 无 id 的通知：notifications/initialized → 202 空响应；其他通知忽略
