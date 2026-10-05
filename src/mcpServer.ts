@@ -574,8 +574,42 @@ export class McpServer implements IMcpServer {
                       },
                     },
                     deliverable: {
-                      type: 'object',
                       description: '交付物；省略时为 Zotero 内建笔记。',
+                      oneOf: [
+                        {
+                          type: 'object',
+                          properties: {
+                            type: { type: 'string', const: 'note' },
+                          },
+                          required: ['type'],
+                        },
+                        {
+                          type: 'object',
+                          properties: {
+                            type: { type: 'string', const: 'file' },
+                            attachToItem: { type: 'boolean' },
+                            allowedExtensions: {
+                              type: 'array',
+                              items: { type: 'string' },
+                            },
+                            maxBytes: {
+                              type: 'integer',
+                              minimum: 1,
+                              maximum: 209715200,
+                            },
+                          },
+                          required: ['type'],
+                        },
+                        {
+                          type: 'object',
+                          properties: {
+                            type: { type: 'string', const: 'markdown' },
+                            target: { type: 'string', enum: ['note', 'file'] },
+                            attachToItem: { type: 'boolean' },
+                          },
+                          required: ['type', 'target'],
+                        },
+                      ],
                     },
                     scanNow: {
                       type: 'boolean',
