@@ -99,11 +99,21 @@ assert.ok(
 );
 
 assert.ok(
-  mcpTs.includes("const MCP_LEGACY_PROTOCOL_VERSION = '2025-11-25'") &&
+  mcpTs.includes("'2025-11-25'") &&
+    mcpTs.includes("'2025-06-18'") &&
+    mcpTs.includes("'2025-03-26'") &&
+    mcpTs.includes("'2024-11-05'") &&
     mcpTs.includes("const MCP_MODERN_PROTOCOL_VERSION = '2026-07-28'") &&
     mcpTs.includes("case 'server/discover':") &&
     mcpTs.includes("supportedVersions: [MCP_MODERN_PROTOCOL_VERSION]"),
-  'MCP endpoint must dual-serve legacy 2025-11-25 and modern 2026-07-28'
+  'MCP endpoint must dual-serve legacy revisions and modern 2026-07-28'
+);
+assert.ok(
+  mcpTs.includes('function negotiateLegacyProtocolVersion(') &&
+    mcpTs.includes('protocolVersions') &&
+    mcpTs.includes('supportedProtocolVersions') &&
+    mcpTs.includes('protocolVersion: negotiatedVersion'),
+  'legacy initialize must negotiate the client-offered supported revision instead of forcing 2025-11-25'
 );
 assert.ok(
   mcpTs.includes("getHeader(requestData?.headers, 'MCP-Protocol-Version')") &&
@@ -242,6 +252,14 @@ assert.ok(
     panelTs.includes("taskStatusGroupKey(sg.id, st)") &&
     panelTs.includes("taskStatusGroupKey(sg.id, 'done')"),
   'expanding one task must preserve the user-selected open/closed state of status groups'
+);
+assert.ok(
+  panelTs.includes('resolveTaskItem(t.itemKey)') &&
+    panelTs.includes("panel-detail-item-title") &&
+    panelTs.includes("panel-detail-view-in-library") &&
+    panelTs.includes('await pane.selectItem(item.id)') &&
+    panelTs.includes('win?.focus?.()'),
+  'task detail must show the Zotero item title and provide a jump-to-library action'
 );
 assert.ok(
   panelTs.includes("d.existingAttachmentPolicy =\n            filePolicy.value === 'overwrite' ? 'overwrite' : 'skip';") &&
