@@ -23,6 +23,7 @@ const coreTs = read('src/core.ts');
 const mcpTs = read('src/mcpServer.ts');
 const addonPrefs = read('addon/prefs.js');
 const utilsTs = read('src/utils.ts');
+const menuIconSvg = read('addon/content/icons/icon.svg');
 const panelTs = read('src/panel.ts');
 const skillStoreTs = read('src/skillGroupStore.ts');
 
@@ -126,6 +127,13 @@ assert.ok(
 assert.ok(
   uiTs.includes("icon: 'chrome://zotero-skill-task/content/icons/icon.svg'"),
   'Tools menu item must include the plugin icon'
+);
+assert.ok(
+  menuIconSvg.includes('width="16"') &&
+    menuIconSvg.includes('height="16"') &&
+    menuIconSvg.includes('fill="context-fill"') &&
+    !menuIconSvg.includes('context-stroke'),
+  'Tools menu SVG must follow Zotero MenuManager 16x16 context-fill icon contract'
 );
 assert.ok(
   addonPrefs.includes('pref("extensions.zotero-skill-task.deliverable.maxFileMB", 200)') &&
