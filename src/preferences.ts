@@ -97,6 +97,8 @@ function refreshMcpStatus(): void {
 function init(): void {
   const root = $(PREF_ROOT_ID);
   if (!root) return;
+  const bootStatus = $('st-prefs-boot');
+  if (bootStatus) bootStatus.textContent = '设置脚本已启动，正在连接插件核心…';
   // PreferencePane 是动态插入的 fragment，可能因设置窗口重绘重复触发 onload。
   // 用根节点标记保证事件只绑定一次。
   if (root.getAttribute('data-skill-task-initialized') === 'true') return;
@@ -124,6 +126,7 @@ function init(): void {
       // ignore
     }
     showError(msg);
+    if (bootStatus) bootStatus.textContent = '设置脚本已启动，但插件核心未就绪。';
     root.setAttribute('data-skill-task-initialized', 'true');
     return;
   }
@@ -238,6 +241,7 @@ function init(): void {
     });
   }
 
+  if (bootStatus) (bootStatus as HTMLElement).hidden = true;
   root.setAttribute('data-skill-task-initialized', 'true');
 }
 
