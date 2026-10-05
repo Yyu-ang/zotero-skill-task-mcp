@@ -90,6 +90,20 @@ assert.ok(
   'MCP status must report the actual Zotero server port with a correct pref fallback'
 );
 
+assert.ok(
+  mcpTs.includes("const MCP_PROTOCOL_VERSION = '2025-11-25'"),
+  'MCP endpoint must advertise the implemented 2025 Streamable HTTP compatibility revision'
+);
+assert.ok(
+  mcpTs.includes("typeof incoming === 'object'") &&
+    !mcpTs.includes("JSON.parse(String(requestData?.data"),
+  'MCP endpoint must accept Zotero.Server pre-parsed application/json payloads'
+);
+assert.ok(
+  mcpTs.includes("prefs.get(PREF_MCP_TOKEN_ENABLED, true)"),
+  'MCP access-token protection must default to enabled'
+);
+
 for (const required of [
   'ctx.Zotero = Zotero',
   'ctx.Services = Services',
