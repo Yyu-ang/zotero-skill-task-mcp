@@ -736,6 +736,15 @@ export class McpServer implements IMcpServer {
                     },
                   },
                 },
+                outputSchema: {
+                  type: 'object',
+                  properties: {
+                    task: { type: ['object', 'null'] },
+                    materials: { type: ['object', 'null'] },
+                    message: { type: 'string' },
+                  },
+                  required: ['task', 'materials'],
+                },
               },
               {
                 name: 'skilltask_inject_skill',
@@ -869,6 +878,17 @@ export class McpServer implements IMcpServer {
                   },
                   required: ['name', 'instruction'],
                 },
+                outputSchema: {
+                  type: 'object',
+                  properties: {
+                    ok: { type: 'boolean' },
+                    skillGroup: { type: 'object' },
+                    assets: { type: 'object' },
+                    scan: {},
+                    error: { type: 'string' },
+                  },
+                  required: ['ok'],
+                },
               },
               {
                 name: 'skilltask_submit',
@@ -909,6 +929,22 @@ export class McpServer implements IMcpServer {
                     },
                   },
                   required: ['taskId'],
+                },
+                outputSchema: {
+                  type: 'object',
+                  properties: {
+                    ok: { type: 'boolean' },
+                    noteKey: { type: 'string' },
+                    fileName: { type: 'string' },
+                    attachmentKey: { type: 'string' },
+                    deliverableType: {
+                      type: 'string',
+                      enum: ['note', 'file', 'markdown'],
+                    },
+                    duplicate: { type: 'boolean' },
+                    error: { type: 'string' },
+                  },
+                  required: ['ok'],
                 },
               },
             ],
