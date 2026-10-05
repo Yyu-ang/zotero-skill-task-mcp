@@ -436,6 +436,39 @@
     .audit-ic.ok { background: var(--ok-soft); color: var(--ok); }
     .audit-ic.danger { background: var(--danger-soft); color: var(--danger); }
 
+    /* ── 技能文件上传区 ── */
+    .drop-zone {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 6px; min-height: 104px; padding: 18px; margin-top: 6px;
+      border: 1.5px dashed var(--border); border-radius: 10px;
+      background: var(--surface-2); color: var(--muted); cursor: pointer;
+      text-align: center; transition: border-color .15s ease, background .15s ease, transform .15s ease;
+    }
+    .drop-zone strong { color: var(--text); font-size: 13px; font-weight: 600; }
+    .drop-zone span { font-size: 12px; }
+    .drop-zone:hover, .drop-zone:focus-visible, .drop-zone.dragging {
+      border-color: var(--accent); background: var(--accent-soft); outline: none;
+    }
+    .drop-zone.dragging { transform: scale(1.005); }
+    .upload-status {
+      margin-top: 7px; padding: 7px 9px; border-radius: 7px;
+      background: var(--surface-2); color: var(--muted); font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+    .references-box {
+      margin: 8px 0 0 26px; padding: 10px 12px;
+      border-left: 2px solid var(--border);
+    }
+    .upload-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+    .upload-file {
+      display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
+      align-items: center; gap: 8px; padding: 6px 8px;
+      border: 1px solid var(--border); border-radius: 7px; background: var(--surface);
+      font-size: 12px;
+    }
+    .upload-file.pending { border-style: dashed; }
+    .upload-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
     /* ── 动效总开关 ── */
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
