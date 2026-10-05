@@ -205,6 +205,15 @@
     }
     .field textarea { min-height: 90px; resize: vertical; }
     .radio-row, .check-row { display: flex; align-items: center; gap: 6px; margin: 4px 0; font-size: 14px; }
+    .field-inline {
+      display: flex; align-items: center; gap: 8px; margin: 6px 0;
+      font-size: 13px;
+    }
+    .field-inline select {
+      min-width: 190px; padding: 5px 8px;
+      border: 1px solid var(--border); border-radius: 6px;
+      background: var(--input-bg); color: var(--text);
+    }
     .coll-list {
       max-height: 180px; overflow-y: auto;
       border: 1px solid var(--border); border-radius: 6px;
