@@ -1,7 +1,7 @@
 # Zotero Skill Task MCP（插件）
 
-Zotero 桌面端插件：用户在 Zotero 内维护"技能组"（AI 任务模板：任务指令、范围、输入材料、交付物定义），
-插件按范围扫描文献生成可持久化任务；外部 AI 通过 MCP HTTP 接口可注入技能组、被动单条领取任务（租约防并发），
+Zotero 桌面端插件：用户在 Zotero 内维护“技能组”（AI 任务模板：技能说明、任务指令、SKILL.md、可选 references/、范围、输入材料、交付物定义），
+每个技能拥有独立目录 `skilltask/skills/<技能ID>/`；插件按范围扫描文献生成可持久化任务；外部 AI 通过 MCP HTTP 接口可注入技能组/技能文件、被动单条领取任务（租约防并发），
 并提交交付物，由插件校验后写回 Zotero 条目笔记/文件并更新任务状态。
 
 插件不内置 AI、不推送任务。需求基线见 [`需求计划书.md`](./需求计划书.md)。
@@ -62,7 +62,7 @@ addon/
   bootstrap.js         Zotero 生命周期入口（仅转发事件，无业务逻辑）
   prefs.js             默认偏好
   locale/en-US|zh-CN  Fluent 本地化（菜单标签等）
-  content/panel.xhtml  占位管理面板
+  content/panel.html   技能组/任务/MCP 管理面板
 src/
   index.ts  打包入口（暴露 PluginHook）
   core.ts   生命周期 + 窗口管理

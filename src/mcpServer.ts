@@ -41,6 +41,7 @@ import { LIMITS, error as logError, log, truncateForDisplay } from './utils';
 import { traced } from './utils/trace';
 import {
   DELIVERABLES_DIR_NAME,
+  base64ToBytes,
   normalizeDeliverable,
   validateSubmitParams,
   type ValidatedSubmission,
@@ -546,9 +547,39 @@ export class McpServer implements IMcpServer {
                       type: 'string',
                       description: '技能组名称。',
                     },
+                    description: {
+                      type: 'string',
+                      description: '技能说明/用途说明。',
+                    },
                     instruction: {
                       type: 'string',
-                      description: '发给 AI 的任务指令。',
+                      description: '发给 AI 的任务级指令。',
+                    },
+                    skillMarkdown: {
+                      type: 'string',
+                      description:
+                        'SKILL.md 的完整 Markdown 内容；提供后写入技能目录 SKILL.md。',
+                    },
+                    referencesEnabled: {
+                      type: 'boolean',
+                      description: '是否启用 references/ 参考资料目录。',
+                    },
+                    referencesDescription: {
+                      type: 'string',
+                      description: 'references/ 中参考资料的用途说明。',
+                    },
+                    referenceFiles: {
+                      type: 'array',
+                      description:
+                        '写入 references/ 的参考文件；内容使用 base64，可包含 PDF/MD/TXT 等文件。',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          fileName: { type: 'string' },
+                          contentBase64: { type: 'string' },
+                        },
+                        required: ['fileName', 'contentBase64'],
+                      },
                     },
                     scope: {
                       type: 'object',
@@ -736,6 +767,7 @@ export class McpServer implements IMcpServer {
   private async injectSkill(params: any): Promise<{
     ok: boolean;
     skillGroup?: SkillGroup;
+    assets?: Awaited<ReturnType<ISkillGroupStore['getAssetManifest']>>;
     scan?: unknown;
     error?: string;
   }> {
@@ -780,18 +812,49 @@ export class McpServer implements IMcpServer {
 
       const skillGroup = await this.skillGroups.create({
         name,
+        description:
+          typeof params?.description === 'string' ? params.description : '',
         instruction,
+        referencesEnabled: params?.referencesEnabled === true,
+        referencesDescription:
+          typeof params?.referencesDescription === 'string'
+            ? params.referencesDescription
+            : '',
         scope,
         materials,
         deliverable,
       });
+
+      if (
+        typeof params?.skillMarkdown === 'string' &&
+        params.skillMarkdown.trim()
+      ) {
+        await this.skillGroups.writeSkillFile(
+          skillGroup.id,
+          new TextEncoder().encode(params.skillMarkdown)
+        );
+      }
+
+      if (
+        params?.referencesEnabled === true &&
+        Array.isArray(params?.referenceFiles) &&
+        params.referenceFiles.length
+      ) {
+        const uploads = params.referenceFiles.map((file: any) => ({
+          name: String(file?.fileName ?? ''),
+          bytes: base64ToBytes(String(file?.contentBase64 ?? '')),
+        }));
+        await this.skillGroups.writeReferenceFiles(skillGroup.id, uploads);
+      }
+
+      const assets = await this.skillGroups.getAssetManifest(skillGroup.id);
 
       let scan: unknown = undefined;
       if (params?.scanNow === true) {
         scan = await this.generator.scanSkillGroup(skillGroup.id);
       }
 
-      return { ok: true, skillGroup, scan };
+      return { ok: true, skillGroup, assets, scan };
     } catch (e) {
       return { ok: false, error: errMsg(e) };
     }
@@ -863,12 +926,20 @@ export class McpServer implements IMcpServer {
         continue;
       }
       const materials = await this.buildMaterialPackage(sg, task.itemKey);
+      const skillAssets = await this.skillGroups.getAssetManifest(sg.id);
+      if (sg.referencesEnabled !== true) {
+        skillAssets.references = [];
+      }
       return {
         task: {
           id: task.id,
           skillGroupId: task.skillGroupId,
           skillGroupVersion: task.skillGroupVersion,
           instruction: task.instructionSnapshot,
+          skillDescription: sg.description ?? '',
+          skillAssets,
+          referencesDescription:
+            sg.referencesEnabled === true ? sg.referencesDescription ?? '' : '',
           itemKey: task.itemKey,
           leaseExpiresAt: task.leaseExpiresAt ?? Date.now() + getLeaseMs(),
           // FR-07：领取结果携带交付物 schema，提交时须按此格式

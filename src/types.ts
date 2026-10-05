@@ -69,12 +69,40 @@ export type SkillDeliverable =
       attachToItem?: boolean;
     };
 
+/** 技能文件/参考文件元信息（实际文件保存在 Zotero 数据目录 skilltask/skills/<id>/ 下） */
+export interface SkillAssetFile {
+  name: string;
+  path: string;
+  size: number;
+}
+
+/** 技能目录清单 */
+export interface SkillAssetManifest {
+  skillGroupId: string;
+  skillDir: string;
+  skillFile: SkillAssetFile | null;
+  referencesDir: string;
+  references: SkillAssetFile[];
+}
+
+/** 面板/MCP 写入技能目录时使用的二进制文件 */
+export interface SkillAssetUpload {
+  name: string;
+  bytes: Uint8Array;
+}
+
 /** 技能组（AI 任务模板） */
 export interface SkillGroup {
   id: string;
   name: string;
-  /** 任务指令（发给 AI 的说明文字） */
+  /** 技能说明：给用户/AI看的高层用途说明 */
+  description: string;
+  /** 任务指令（发给 AI 的任务级说明文字；兼容既有任务模型） */
   instruction: string;
+  /** 是否启用 references/ 参考资料目录 */
+  referencesEnabled: boolean;
+  /** references/ 参考资料说明 */
+  referencesDescription: string;
   /** 启用中 / 已停用 */
   enabled: boolean;
   /** 归档（软删除，不再生成新任务，历史保留） */
@@ -90,7 +118,10 @@ export interface SkillGroup {
 
 export interface SkillGroupCreateData {
   name: string;
+  description?: string;
   instruction: string;
+  referencesEnabled?: boolean;
+  referencesDescription?: string;
   scope: SkillScope;
   materials: SkillMaterials;
   deliverable: SkillDeliverable;
@@ -99,7 +130,14 @@ export interface SkillGroupCreateData {
 export type SkillGroupPatch = Partial<
   Pick<
     SkillGroup,
-    'name' | 'instruction' | 'scope' | 'materials' | 'deliverable'
+    | 'name'
+    | 'description'
+    | 'instruction'
+    | 'referencesEnabled'
+    | 'referencesDescription'
+    | 'scope'
+    | 'materials'
+    | 'deliverable'
   >
 >;
 
@@ -171,6 +209,12 @@ export interface ClaimResult {
     skillGroupId: string;
     skillGroupVersion: number;
     instruction: string;
+    /** 技能说明 */
+    skillDescription: string;
+    /** SKILL.md / references 实际文件清单 */
+    skillAssets: SkillAssetManifest;
+    /** references 说明，仅 referencesEnabled=true 时有意义 */
+    referencesDescription: string;
     itemKey: string;
     leaseExpiresAt: number;
     /** 技能组声明的交付物 schema（FR-07）：提交时须按此格式 */
@@ -243,6 +287,14 @@ export interface ISkillGroupStore {
   archive(id: string): Promise<void>;
   /** 硬删除（仅允许已归档的） */
   remove(id: string): Promise<void>;
+  /** 技能目录清单 */
+  getAssetManifest(id: string): Promise<SkillAssetManifest>;
+  /** 写入/替换 SKILL.md（固定文件名） */
+  writeSkillFile(id: string, bytes: Uint8Array): Promise<SkillAssetFile>;
+  /** 向 references/ 写入一个或多个参考文件（同名覆盖） */
+  writeReferenceFiles(id: string, files: SkillAssetUpload[]): Promise<SkillAssetFile[]>;
+  /** 删除 references/ 中的一个参考文件 */
+  removeReferenceFile(id: string, name: string): Promise<void>;
   /** 条目是否命中技能组范围（父条目；多集合命中仍只算一次，由调用方保证唯一性） */
   matchesScope(sg: SkillGroup, item: any): Promise<boolean>;
 }
