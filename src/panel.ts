@@ -1175,7 +1175,7 @@ function renderForm(wrap: HTMLElement): void {
           const mbText = maxMBInput.value.trim();
           if (mbText) {
             const mb = Number(mbText);
-            if (!Number.isFinite(mb) || mb <= 0 || mb > 200) {
+            if (!Number.isFinite(mb) || mb <= 0) {
               showError(getString('panel-form-err-maxmb'));
               return;
             }
