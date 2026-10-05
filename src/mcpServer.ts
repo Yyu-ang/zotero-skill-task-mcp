@@ -595,7 +595,6 @@ export class McpServer implements IMcpServer {
                             maxBytes: {
                               type: 'integer',
                               minimum: 1,
-                              maximum: 209715200,
                             },
                           },
                           required: ['type'],
