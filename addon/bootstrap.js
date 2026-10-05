@@ -25,7 +25,7 @@ async function startup({ id, version, rootURI }, reason) {
    * 脚本内所有顶层变量都会挂到这个对象上。
    * 插件实例单层挂在 Zotero['zotero-skill-task'] 上（{ plugin, hooks }），
    * bootstrap.js 直接调用其 hooks；设置页的 preferences.js 经 Zotero.SkillTask
-   * 单通道访问业务 API（preferences.xhtml 无 onload 回调）。
+   * 单通道访问业务 API，并由 preferences.xhtml 的 pane onload 触发初始化。
    *
    * 注意：scope 里没有真实的 Zotero 全局（globalThis 是 ctx 自身），
    * 所以把 bootstrap 作用域的 Zotero/Services 等显式传进去。
@@ -49,6 +49,9 @@ async function startup({ id, version, rootURI }, reason) {
   try { ctx.Ci = Ci; } catch {}
   try { ctx.DOMParser = DOMParser; } catch {}
   try { ctx.TextEncoder = TextEncoder; } catch {}
+  try { ctx.URL = URL; } catch {}
+  try { ctx.atob = atob; } catch {}
+  try { ctx.btoa = btoa; } catch {}
   try { ctx.crypto = crypto; } catch {}
   try { ctx.setTimeout = setTimeout; } catch {}
   try { ctx.clearTimeout = clearTimeout; } catch {}
