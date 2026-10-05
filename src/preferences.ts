@@ -24,6 +24,7 @@ import {
 import { getPanelShortcutLabel, isShortcutKeyReserved } from './ui';
 
 const FTL_FILE = 'skill-task.ftl';
+const PREF_ROOT_ID = 'zotero-prefpane-skill-task';
 
 /** 插件业务 API（core.ts 在 startup 时挂载到 Zotero.SkillTask） */
 function getAPI(): any {
@@ -93,6 +94,12 @@ function refreshMcpStatus(): void {
 }
 
 function init(): void {
+  const root = $(PREF_ROOT_ID);
+  if (!root) return;
+  // PreferencePane 是动态插入的 fragment，可能因设置窗口重绘重复触发 onload。
+  // 用根节点标记保证事件只绑定一次。
+  if (root.getAttribute('data-skill-task-initialized') === 'true') return;
+
   // 需求单 需求1：JS 侧 Fluent 国际化（构建时从 ftl 提取，同步 getString）
   initLocale();
 
@@ -108,7 +115,15 @@ function init(): void {
 
   const api = getAPI();
   if (!api?.mcp) {
-    showError(getString('prefs-api-missing'));
+    let msg = getString('prefs-api-missing');
+    try {
+      const startupError = String((Zotero as any)?.SkillTaskStartupError ?? '').trim();
+      if (startupError) msg += `（${startupError}）`;
+    } catch {
+      // ignore
+    }
+    showError(msg);
+    root.setAttribute('data-skill-task-initialized', 'true');
     return;
   }
 
@@ -248,6 +263,8 @@ function init(): void {
       }
     });
   }
+
+  root.setAttribute('data-skill-task-initialized', 'true');
 }
 
 function errMsg(e: unknown): string {
@@ -378,8 +395,12 @@ function initShortcutConfig(): void {
   refreshWarn();
 }
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init);
-} else {
+// Zotero 8+ 的 preference pane 在独立全局作用域中运行，显式挂到 window，
+ // 供 preferences.xhtml 的 pane onload 调用。不要依赖整个 Preferences 窗口的
+ // DOMContentLoaded：pane 是之后动态插入的 fragment。
+(window as any).ZoteroSkillTaskPreferences = { init };
+
+// 兼容 scripts 在 fragment 插入之后才执行的加载顺序。
+if (document.getElementById(PREF_ROOT_ID)) {
   init();
 }

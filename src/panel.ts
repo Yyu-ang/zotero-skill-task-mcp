@@ -489,9 +489,20 @@ function init(): void {
 
   api = getAPI();
   if (!api) {
-    // 插件核心未就绪：降级显示提示，主界面隐藏
+    // 插件核心未就绪：降级显示提示，主界面隐藏；若 startup 留下具体错误则一并展示。
     $<HTMLDivElement>('main-ui').hidden = true;
     $<HTMLDivElement>('not-ready').hidden = false;
+    try {
+      const startupError = String((Zotero as any)?.SkillTaskStartupError ?? '').trim();
+      if (startupError) {
+        const desc = document.querySelector('#not-ready p');
+        if (desc) {
+          desc.textContent = `${getString('panel-notready-desc')}（${startupError}）`;
+        }
+      }
+    } catch {
+      // ignore
+    }
     return;
   }
   $<HTMLSpanElement>('ver').textContent = `v${api.version}`;
