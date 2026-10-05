@@ -107,7 +107,7 @@ panel-form-del-file = File (PDF etc., stored in controlled directory)
 panel-form-del-markdown = Markdown text
 panel-form-attach-file = Auto-attach to item on completion
 panel-form-ext-ph = Allowed extensions, comma-separated (blank = default: pdf, md, txt…)
-panel-form-maxmb-ph = Max file size in MB (blank = 200, max 200)
+panel-form-maxmb-ph = Max file size in MB (blank = 200; may be increased)
 panel-form-md-target-note = Convert to built-in note
 panel-form-md-target-file = Save as .md file
 panel-form-attach-md = Auto-attach to item when saving as file
@@ -118,7 +118,7 @@ panel-action-cancel-form-title = Close form without saving
 panel-form-err-name-required = Please enter a skill group name.
 panel-form-err-instruction-required = Please enter the task instruction.
 panel-form-err-scope-empty = For collection scope, select at least one collection.
-panel-form-err-maxmb = Max file size must be between 1 and 200 MB.
+panel-form-err-maxmb = Max file size must be a positive number (MB).
 panel-err-enable-failed = Enable failed: {error}
 panel-err-disable-failed = Disable failed: {error}
 panel-err-copy-sg-failed = Copy failed: {error}

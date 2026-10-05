@@ -102,7 +102,7 @@ export function getLeaseMs(): number {
  */
 export function getDeliverableMaxBytes(): number {
   const mb = Number(prefs.get(PREFS.DELIVERABLE_MAX_FILE_MB, 200));
-  const safeMB = Number.isFinite(mb) && mb > 0 ? Math.min(mb, 200) : 200;
+  const safeMB = Number.isFinite(mb) && mb > 0 ? mb : 200;
   return Math.floor(safeMB * 1048576);
 }
 

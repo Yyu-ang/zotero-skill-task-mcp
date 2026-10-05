@@ -59,13 +59,9 @@ describe('assertValidDeliverable', () => {
       /非法/
     );
   });
-  test('file maxBytes 超过 200MB 拒绝', () => {
-    assert.throws(
-      () => D.assertValidDeliverable({ type: 'file', maxBytes: 201 * 1048576 }),
-      /200MB/
-    );
-    const d = D.assertValidDeliverable({ type: 'file', maxBytes: 200 * 1048576 });
-    assert.equal(d.maxBytes, 200 * 1048576);
+  test('file maxBytes 可高于默认 200MB', () => {
+    const d = D.assertValidDeliverable({ type: 'file', maxBytes: 300 * 1048576 });
+    assert.equal(d.maxBytes, 300 * 1048576);
   });
   test('markdown target=note/file 通过', () => {
     assert.deepEqual(

@@ -117,9 +117,7 @@ export const LIMITS = {
   mcpErrorSnippet: 300,
   /** 文件交付物默认单文件最大字节数（200MB） */
   deliverableFileBytes: 200 * 1024 * 1024,
-  /** 文件交付物绝对硬上限（200MB） */
-  deliverableFileBytesMax: 200 * 1024 * 1024,
-  /** 交付物文件名最大字符数 */
+    /** 交付物文件名最大字符数 */
   deliverableFileName: 120,
 } as const;
 
