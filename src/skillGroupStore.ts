@@ -26,7 +26,7 @@ import {
 } from './types';
 import { LIMITS, log, error, truncateForDisplay } from './utils';
 import { traced } from './utils/trace';
-import { assertValidDeliverable, sanitizeFileName } from './deliverables';
+import { assertValidDeliverable } from './deliverables';
 
 /** 持久化文件名 */
 const FILE_NAME = 'skill-groups.json';
@@ -69,6 +69,23 @@ function assertOptionalText(value: unknown, max: number, label: string): string 
     throw new Error(`${label}过长（最多 ${max} 字符）`);
   }
   return text;
+}
+
+function sanitizeAssetName(name: unknown): string {
+  if (typeof name !== 'string') {
+    throw new Error('参考文件名必须是字符串');
+  }
+  let base = name.split(/[\\/]/).pop()?.trim() ?? '';
+  base = base.replace(/^\.+/, '');
+  base = base.replace(/[^\p{L}\p{N}._\- ()\[\]]/gu, '_');
+  base = base.replace(/_{2,}/g, '_').replace(/\.{2,}/g, '.');
+  if (!base || base === '.' || base === '..') {
+    throw new Error('参考文件名无效');
+  }
+  if (base.length > 180) {
+    throw new Error('参考文件名过长（最多 180 字符）');
+  }
+  return base;
 }
 
 /** 校验范围配置：类型合法；指定集合时至少选一个集合 */
@@ -378,7 +395,7 @@ export class SkillGroupStore implements ISkillGroupStore {
       if (!(input?.bytes instanceof Uint8Array) || input.bytes.byteLength === 0) {
         throw new Error(`参考文件为空：${String(input?.name ?? '')}`);
       }
-      const name = sanitizeFileName(input.name);
+      const name = sanitizeAssetName(input.name);
       const path = PathUtils.join(dir, name);
       await IOUtils.write(path, input.bytes);
       written.push({ name, path, size: input.bytes.byteLength });
@@ -388,7 +405,7 @@ export class SkillGroupStore implements ISkillGroupStore {
 
   async removeReferenceFile(id: string, name: string): Promise<void> {
     this.findOrThrow(id);
-    const safe = sanitizeFileName(name);
+    const safe = sanitizeAssetName(name);
     const path = PathUtils.join(this.skillDir(id), REFERENCES_DIR_NAME, safe);
     await IOUtils.remove(path, { ignoreAbsent: true });
   }
