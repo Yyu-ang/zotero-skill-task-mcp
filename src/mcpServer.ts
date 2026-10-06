@@ -771,239 +771,362 @@ export class McpServer implements IMcpServer {
               version: this.version,
             },
           });
-        case 'tools/list':
-          return this.jsonOk(id, {
-            tools: [
-              {
-                name: 'skilltask_claim',
-                description:
-                  '从技能组任务队列中领取下一条待处理任务。每次调用至多返回一条任务；' +
-                  '无可领取任务时返回空队列结果（message 为 empty-queue）。' +
-                  '返回含 deliverable（该技能组声明的交付物 schema），提交时须按其格式。',
-                inputSchema: {
-                  type: 'object',
-                  properties: {
-                    skillGroupId: {
-                      type: 'string',
-                      description:
-                        '技能组 ID；省略则从全部待领取任务中领取最早的一条。',
-                    },
+        case 'tools/list': {
+          const structuredOutput = supportsStructuredOutput(protocolVersion);
+          const skillAssetFileSchema = {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              path: { type: 'string' },
+              size: { type: 'integer' },
+            },
+            required: ['name', 'path', 'size'],
+          };
+          const deliverableSchema = {
+            type: 'object',
+            description: '技能组声明的交付物配置。',
+          };
+          const tools: any[] = [
+            {
+              name: 'skilltask_claim',
+              description:
+                '领取下一条待处理任务。返回 task.id、itemKey、leaseExpiresAt、deliverable、' +
+                'SKILL.md/references 清单和材料包；每次至多一条。',
+              inputSchema: {
+                type: 'object',
+                properties: {
+                  skillGroupId: {
+                    type: 'string',
+                    description: '可选技能组 ID；省略则从全部可领取任务中选择。',
                   },
-                },
-                outputSchema: {
-                  type: 'object',
-                  properties: {
-                    task: { type: ['object', 'null'] },
-                    materials: { type: ['object', 'null'] },
-                    message: { type: 'string' },
-                  },
-                  required: ['task', 'materials'],
                 },
               },
-              {
-                name: 'skilltask_inject_skill',
-                description:
-                  '向 Zotero Skill Task 注入一个新的技能组（任务模板）。' +
-                  '技能组创建后默认启用；可配置作用范围、输入材料和交付物。' +
-                  'scanNow=true 时创建后立即扫描现有文库生成任务。',
-                inputSchema: {
-                  type: 'object',
-                  properties: {
-                    name: {
-                      type: 'string',
-                      description: '技能组名称。',
-                    },
-                    description: {
-                      type: 'string',
-                      description: '技能说明/用途说明。',
-                    },
-                    instruction: {
-                      type: 'string',
-                      description: '发给 AI 的任务级指令。',
-                    },
-                    skillMarkdown: {
-                      type: 'string',
-                      description:
-                        'SKILL.md 的完整 Markdown 内容；提供后写入技能目录 SKILL.md。',
-                    },
-                    referencesEnabled: {
-                      type: 'boolean',
-                      description: '是否启用 references/ 参考资料目录。',
-                    },
-                    referencesDescription: {
-                      type: 'string',
-                      description: 'references/ 中参考资料的用途说明。',
-                    },
-                    referenceFiles: {
-                      type: 'array',
-                      description:
-                        '写入 references/ 的参考文件；内容使用 base64，可包含 PDF/MD/TXT 等文件。',
-                      items: {
+              outputSchema: {
+                type: 'object',
+                properties: {
+                  task: {
+                    type: ['object', 'null'],
+                    properties: {
+                      id: { type: 'string' },
+                      skillGroupId: { type: 'string' },
+                      skillGroupVersion: { type: 'integer' },
+                      instruction: { type: 'string' },
+                      skillDescription: { type: 'string' },
+                      skillAssets: {
                         type: 'object',
                         properties: {
-                          fileName: { type: 'string' },
-                          contentBase64: { type: 'string' },
+                          skillGroupId: { type: 'string' },
+                          skillDir: { type: 'string' },
+                          skillFile: {
+                            anyOf: [skillAssetFileSchema, { type: 'null' }],
+                          },
+                          referencesDir: { type: 'string' },
+                          references: {
+                            type: 'array',
+                            items: skillAssetFileSchema,
+                          },
                         },
-                        required: ['fileName', 'contentBase64'],
+                        required: [
+                          'skillGroupId',
+                          'skillDir',
+                          'skillFile',
+                          'referencesDir',
+                          'references',
+                        ],
                       },
+                      referencesDescription: { type: 'string' },
+                      itemKey: { type: 'string' },
+                      leaseExpiresAt: { type: 'number' },
+                      deliverable: deliverableSchema,
                     },
-                    scope: {
+                    required: [
+                      'id',
+                      'skillGroupId',
+                      'skillGroupVersion',
+                      'instruction',
+                      'skillDescription',
+                      'skillAssets',
+                      'referencesDescription',
+                      'itemKey',
+                      'leaseExpiresAt',
+                      'deliverable',
+                    ],
+                  },
+                  materials: {
+                    type: ['object', 'null'],
+                    properties: {
+                      itemKey: { type: 'string' },
+                      metadata: {
+                        type: ['object', 'null'],
+                        properties: {
+                          title: { type: 'string' },
+                          creators: { type: 'string' },
+                          date: { type: 'string' },
+                          itemType: { type: 'string' },
+                        },
+                      },
+                      abstractNote: { type: ['string', 'null'] },
+                      notes: {
+                        type: ['array', 'null'],
+                        items: {
+                          type: 'object',
+                          properties: {
+                            key: { type: 'string' },
+                            title: { type: 'string' },
+                            text: { type: 'string' },
+                          },
+                          required: ['key', 'title', 'text'],
+                        },
+                      },
+                      pdfPath: { type: ['string', 'null'] },
+                    },
+                    required: [
+                      'itemKey',
+                      'metadata',
+                      'abstractNote',
+                      'notes',
+                      'pdfPath',
+                    ],
+                  },
+                  message: { type: 'string' },
+                },
+                required: ['task', 'materials'],
+              },
+            },
+            {
+              name: 'skilltask_renew',
+              description:
+                '给已领取且仍有效的任务续租一个完整 lease 周期。每次从当前过期时间向后延长。',
+              inputSchema: {
+                type: 'object',
+                properties: {
+                  taskId: { type: 'string', description: '领取时返回的 task.id。' },
+                },
+                required: ['taskId'],
+              },
+              outputSchema: {
+                type: 'object',
+                properties: {
+                  ok: { type: 'boolean' },
+                  taskId: { type: 'string' },
+                  leaseExpiresAt: { type: 'number' },
+                  error: { type: 'string' },
+                },
+                required: ['ok'],
+              },
+            },
+            {
+              name: 'skilltask_release',
+              description:
+                '主动归还当前已领取任务，使其立即回到 pending，供其他 agent 重新领取。',
+              inputSchema: {
+                type: 'object',
+                properties: {
+                  taskId: { type: 'string', description: '领取时返回的 task.id。' },
+                },
+                required: ['taskId'],
+              },
+              outputSchema: {
+                type: 'object',
+                properties: {
+                  ok: { type: 'boolean' },
+                  taskId: { type: 'string' },
+                  status: { type: 'string' },
+                  error: { type: 'string' },
+                },
+                required: ['ok'],
+              },
+            },
+            {
+              name: 'skilltask_status',
+              description:
+                '只读查看任务队列状态，可按 skillGroupId 过滤；返回状态计数及当前 claimed 租约。',
+              inputSchema: {
+                type: 'object',
+                properties: {
+                  skillGroupId: { type: 'string' },
+                },
+              },
+              outputSchema: {
+                type: 'object',
+                properties: {
+                  ok: { type: 'boolean' },
+                  total: { type: 'integer' },
+                  counts: {
+                    type: 'object',
+                    properties: {
+                      'waiting-material': { type: 'integer' },
+                      pending: { type: 'integer' },
+                      claimed: { type: 'integer' },
+                      done: { type: 'integer' },
+                      failed: { type: 'integer' },
+                      cancelled: { type: 'integer' },
+                    },
+                    required: [
+                      'waiting-material',
+                      'pending',
+                      'claimed',
+                      'done',
+                      'failed',
+                      'cancelled',
+                    ],
+                  },
+                  claimed: {
+                    type: 'array',
+                    items: {
                       type: 'object',
-                      description: '作用范围；省略时为全库。',
                       properties: {
-                        type: { type: 'string', enum: ['all', 'collections'] },
-                        collectionKeys: {
-                          type: 'array',
-                          items: { type: 'string' },
-                        },
-                        includeSubcollections: { type: 'boolean' },
+                        id: { type: 'string' },
+                        skillGroupId: { type: 'string' },
+                        itemKey: { type: 'string' },
+                        leaseExpiresAt: { type: ['number', 'null'] },
                       },
+                      required: ['id', 'skillGroupId', 'itemKey', 'leaseExpiresAt'],
                     },
-                    materials: {
+                  },
+                  skillGroups: {
+                    type: 'array',
+                    items: {
                       type: 'object',
-                      description:
-                        '输入材料；省略时提供 metadata+abstract，不提供 notes/PDF。',
                       properties: {
-                        includeMetadata: { type: 'boolean' },
-                        includeAbstract: { type: 'boolean' },
-                        includeNotes: { type: 'boolean' },
-                        pdf: { type: 'string', enum: ['earliest', 'none'] },
+                        id: { type: 'string' },
+                        name: { type: 'string' },
+                        enabled: { type: 'boolean' },
+                        archived: { type: 'boolean' },
+                        total: { type: 'integer' },
+                        counts: { type: 'object' },
                       },
-                    },
-                    deliverable: {
-                      description: '交付物；省略时为 Zotero 内建笔记。',
-                      oneOf: [
-                        {
-                          type: 'object',
-                          properties: {
-                            type: { type: 'string', const: 'note' },
-                          },
-                          required: ['type'],
-                        },
-                        {
-                          type: 'object',
-                          properties: {
-                            type: { type: 'string', const: 'file' },
-                            attachToItem: { type: 'boolean' },
-                            allowedExtensions: {
-                              type: 'array',
-                              items: { type: 'string' },
-                            },
-                            maxBytes: {
-                              type: 'integer',
-                              minimum: 1,
-                            },
-                            targetFileName: {
-                              type: 'string',
-                              description: '可选：限定最终交付文件名（含扩展名）。',
-                            },
-                            existingAttachmentPolicy: {
-                              type: 'string',
-                              enum: ['overwrite', 'skip'],
-                              description:
-                                '自动挂附件且同名附件存在时：overwrite 覆盖，skip 跳过并视为完成。',
-                            },
-                          },
-                          required: ['type'],
-                        },
-                        {
-                          type: 'object',
-                          properties: {
-                            type: { type: 'string', const: 'markdown' },
-                            target: { type: 'string', enum: ['note', 'file'] },
-                            attachToItem: { type: 'boolean' },
-                            targetFileName: {
-                              type: 'string',
-                              description: 'target=file 时可限定最终 .md 文件名。',
-                            },
-                            existingAttachmentPolicy: {
-                              type: 'string',
-                              enum: ['overwrite', 'skip'],
-                            },
-                          },
-                          required: ['type', 'target'],
-                        },
+                      required: [
+                        'id',
+                        'name',
+                        'enabled',
+                        'archived',
+                        'total',
+                        'counts',
                       ],
                     },
-                    scanNow: {
-                      type: 'boolean',
-                      description: '创建后是否立即扫描现有文库；默认 false。',
-                    },
                   },
-                  required: ['name', 'instruction'],
+                  error: { type: 'string' },
                 },
-                outputSchema: {
-                  type: 'object',
-                  properties: {
-                    ok: { type: 'boolean' },
-                    skillGroup: { type: 'object' },
-                    assets: { type: 'object' },
-                    scan: {},
-                    error: { type: 'string' },
-                  },
-                  required: ['ok'],
-                },
+                required: ['ok'],
               },
-              {
-                name: 'skilltask_submit',
-                description:
-                  '提交任务结果。按领取时返回的 deliverable schema 选择参数：' +
-                  'note → noteHtml（HTML，脚本/事件属性会被清理）；' +
-                  'markdown → markdown（文本）；' +
-                  'file → contentBase64（若技能未限定目标文件名则另传 fileName；' +
-                  '文件存入受控目录，可按技能组配置自动挂成条目附件）。' +
-                  '成功后任务标记为完成；重复提交同一任务幂等返回，' +
-                  '不会产生第二条笔记/第二个文件。',
-                inputSchema: {
-                  type: 'object',
-                  properties: {
-                    taskId: {
-                      type: 'string',
-                      description: '领取时返回的任务 ID。',
-                    },
-                    noteHtml: {
-                      type: 'string',
-                      description:
-                        '交付物为 note 时：要写入 Zotero 内建笔记的 HTML 内容。',
-                    },
-                    markdown: {
-                      type: 'string',
-                      description:
-                        '交付物为 markdown 时：Markdown 文本（按技能组配置转笔记或存文件）。',
-                    },
-                    fileName: {
-                      type: 'string',
-                      description:
-                        '交付物为 file（或 markdown 存文件）时：文件名（含扩展名，须在白名单内）。',
-                    },
-                    contentBase64: {
-                      type: 'string',
-                      description:
-                        '交付物为 file 时：文件内容的 base64 编码。',
+            },
+            {
+              name: 'skilltask_inject_skill',
+              description:
+                '向 Zotero Skill Task 注入一个新的技能组（任务模板）。' +
+                '技能组创建后默认启用；可配置作用范围、输入材料和交付物。' +
+                'scanNow=true 时创建后立即扫描现有文库生成任务。',
+              inputSchema: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string', description: '技能组名称。' },
+                  description: { type: 'string', description: '技能说明/用途说明。' },
+                  instruction: { type: 'string', description: '发给 AI 的任务级指令。' },
+                  skillMarkdown: {
+                    type: 'string',
+                    description: 'SKILL.md 的完整 Markdown 内容。',
+                  },
+                  referencesEnabled: { type: 'boolean' },
+                  referencesDescription: { type: 'string' },
+                  referenceFiles: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        fileName: { type: 'string' },
+                        contentBase64: { type: 'string' },
+                      },
+                      required: ['fileName', 'contentBase64'],
                     },
                   },
-                  required: ['taskId'],
-                },
-                outputSchema: {
-                  type: 'object',
-                  properties: {
-                    ok: { type: 'boolean' },
-                    noteKey: { type: 'string' },
-                    fileName: { type: 'string' },
-                    attachmentKey: { type: 'string' },
-                    deliverableType: {
-                      type: 'string',
-                      enum: ['note', 'file', 'markdown'],
+                  scope: {
+                    type: 'object',
+                    properties: {
+                      type: { type: 'string', enum: ['all', 'collections'] },
+                      collectionKeys: { type: 'array', items: { type: 'string' } },
+                      includeSubcollections: { type: 'boolean' },
                     },
-                    duplicate: { type: 'boolean' },
-                    error: { type: 'string' },
                   },
-                  required: ['ok'],
+                  materials: {
+                    type: 'object',
+                    properties: {
+                      includeMetadata: { type: 'boolean' },
+                      includeAbstract: { type: 'boolean' },
+                      includeNotes: { type: 'boolean' },
+                      pdf: { type: 'string', enum: ['earliest', 'none'] },
+                    },
+                  },
+                  deliverable: deliverableSchema,
+                  scanNow: { type: 'boolean' },
                 },
+                required: ['name', 'instruction'],
               },
-            ],
-            ...(modern ? { ttlMs: 0, cacheScope: 'private' } : {}),
-          }, modern);
+              outputSchema: {
+                type: 'object',
+                properties: {
+                  ok: { type: 'boolean' },
+                  skillGroup: { type: 'object' },
+                  assets: { type: 'object' },
+                  scan: {},
+                  error: { type: 'string' },
+                },
+                required: ['ok'],
+              },
+            },
+            {
+              name: 'skilltask_submit',
+              description:
+                '提交任务结果。默认对 done 保持幂等；若确需更正已完成交付物，显式传 revise=true。' +
+                'note 使用 noteHtml；markdown 使用 markdown；file 使用 contentBase64。',
+              inputSchema: {
+                type: 'object',
+                properties: {
+                  taskId: { type: 'string', description: '领取时返回的任务 ID。' },
+                  revise: {
+                    type: 'boolean',
+                    description:
+                      '仅用于更正已完成任务；true 时覆盖既有交付物并记录 revised=true。',
+                  },
+                  noteHtml: { type: 'string' },
+                  markdown: { type: 'string' },
+                  fileName: { type: 'string' },
+                  contentBase64: { type: 'string' },
+                },
+                required: ['taskId'],
+              },
+              outputSchema: {
+                type: 'object',
+                properties: {
+                  ok: { type: 'boolean' },
+                  noteKey: { type: 'string' },
+                  fileName: { type: 'string' },
+                  attachmentKey: { type: 'string' },
+                  deliverableType: {
+                    type: 'string',
+                    enum: ['note', 'file', 'markdown'],
+                  },
+                  duplicate: { type: 'boolean' },
+                  revised: { type: 'boolean' },
+                  submissionCount: { type: 'integer' },
+                  error: { type: 'string' },
+                },
+                required: ['ok'],
+              },
+            },
+          ];
+          if (!structuredOutput) {
+            for (const tool of tools) delete tool.outputSchema;
+          }
+          return this.jsonOk(
+            id,
+            {
+              tools,
+              ...(modern ? { ttlMs: 0, cacheScope: 'private' } : {}),
+            },
+            modern
+          );
+        }
         case 'tools/call': {
           const name = rpc?.params?.name;
           const args = rpc?.params?.arguments ?? {};
