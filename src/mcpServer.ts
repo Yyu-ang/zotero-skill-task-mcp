@@ -1690,7 +1690,6 @@ export class McpServer implements IMcpServer {
    */
   @traced
   private async submit(params: any): Promise<SubmitResult> {
-    // 防御：taskId 必须为非空字符串（外部输入先做类型守卫）
     const taskId =
       typeof params?.taskId === 'string' ? params.taskId.trim() : '';
     if (!taskId) {
@@ -1700,68 +1699,92 @@ export class McpServer implements IMcpServer {
     if (!task) {
       return { ok: false, error: 'task-not-found' };
     }
-    // 幂等：已完成且已有交付物引用，直接返回（不产生第二个交付物）
-    if (task.status === 'done' && task.deliverableRef) {
+
+    const revise = params?.revise === true;
+    const isRevision = task.status === 'done' && revise;
+
+    // 默认保持既有幂等语义；只有显式 revise=true 才允许更正 done。
+    if (task.status === 'done' && !isRevision && task.deliverableRef) {
       return this.duplicateResult(task);
     }
-    // 历史兼容：v1 老任务 done + noteKey（无 deliverableRef）
-    if (task.status === 'done' && task.noteKey) {
+    if (task.status === 'done' && !isRevision && task.noteKey) {
       return {
         ok: true,
         noteKey: task.noteKey,
         deliverableType: 'note',
         duplicate: true,
+        submissionCount: Math.max(1, task.submissionCount || 1),
       };
     }
-    if (task.status !== 'claimed') {
-      return { ok: false, error: `task-not-claimed:${task.status}` };
-    }
-    // 租约过期：先释放过期租约，再报错（任务回到待领取，可重新领取）
-    if (
-      task.leaseExpiresAt !== null &&
-      task.leaseExpiresAt <= Date.now()
-    ) {
-      try {
-        await this.tasks.releaseExpiredLeases();
-      } catch {
-        // ignore
+
+    if (!isRevision) {
+      if (task.status !== 'claimed') {
+        return { ok: false, error: `task-not-claimed:${task.status}` };
       }
-      return { ok: false, error: 'lease-expired' };
+      if (
+        task.leaseExpiresAt !== null &&
+        task.leaseExpiresAt <= Date.now()
+      ) {
+        try {
+          await this.tasks.releaseExpiredLeases();
+        } catch {
+          // ignore
+        }
+        return { ok: false, error: 'lease-expired' };
+      }
     }
-    // 技能组被硬删除：任务成孤儿，标记失败使其可见
+
     const sg = this.skillGroups.get(task.skillGroupId);
     if (!sg) {
-      await this.tasks
-        .fail(task.id, '技能组不存在，任务无法提交')
-        .catch(() => undefined);
+      if (!isRevision) {
+        await this.tasks
+          .fail(task.id, '技能组不存在，任务无法提交')
+          .catch(() => undefined);
+      }
       return { ok: false, error: 'skill-group-missing' };
     }
-    // 按交付物 schema 校验提交参数（纯逻辑；损坏配置降级为 note）
+
     const deliverable = normalizeDeliverable(sg.deliverable);
     const validated = validateSubmitParams(deliverable, params, task.id);
     if (!validated.ok) {
       return { ok: false, error: validated.error };
     }
-    // 按 itemKey 取父条目（守卫：不存在则 fail 任务并报错）
+
     const parent = await this.resolveParentItem(task.itemKey);
     if (!parent) {
-      await this.tasks
-        .fail(task.id, 'parent-item-missing')
-        .catch(() => undefined);
+      if (!isRevision) {
+        await this.tasks
+          .fail(task.id, 'parent-item-missing')
+          .catch(() => undefined);
+      }
       return { ok: false, error: 'parent-item-missing' };
     }
+
     switch (validated.kind) {
       case 'note':
-        return this.submitNote(task, parent, validated.html, 'note');
+        return this.submitNote(
+          task,
+          parent,
+          validated.html,
+          'note',
+          isRevision
+        );
       case 'markdown-note':
-        return this.submitNote(task, parent, validated.html, 'markdown');
+        return this.submitNote(
+          task,
+          parent,
+          validated.html,
+          'markdown',
+          isRevision
+        );
       case 'file':
         return this.submitFile(
           task,
           parent,
           deliverable,
           validated.fileName,
-          validated.bytes
+          validated.bytes,
+          isRevision
         );
       case 'markdown-file':
         return this.submitFile(
@@ -1769,7 +1792,8 @@ export class McpServer implements IMcpServer {
           parent,
           deliverable,
           validated.fileName,
-          new TextEncoder().encode(validated.text)
+          new TextEncoder().encode(validated.text),
+          isRevision
         );
     }
   }
@@ -1781,6 +1805,7 @@ export class McpServer implements IMcpServer {
       ok: true,
       duplicate: true,
       deliverableType: dtype,
+      submissionCount: Math.max(1, task.submissionCount || 1),
     };
     if (task.noteKey) {
       res.noteKey = task.noteKey;
