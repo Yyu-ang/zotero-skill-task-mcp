@@ -17,5 +17,5 @@
     "release:publish": "node scripts/release.mjs --publish"
   },
   "type": "module",
-  "version": "0.5.7"
+  "version": "0.5.8"
 }
