@@ -23,26 +23,26 @@
 
 ## 界面预览
 
-> 以下界面图按当前 v0.5.8 前端样式渲染，使用示例数据，不包含真实文献或访问凭据。
+> 以下界面图按当前前端视觉样式绘制，全部使用虚构示例数据，不包含真实文献、条目 Key、附件 Key 或访问凭据。
 
 <table>
   <tr>
     <td width="50%">
-      <img src="docs/images/skills-overview.png" alt="技能组总览">
+      <img src="docs/images/skills-overview.svg" alt="技能组总览">
       <br><strong>技能组总览</strong>：查看技能状态、任务统计与扫描入口。
     </td>
     <td width="50%">
-      <img src="docs/images/skill-editor.png" alt="新增技能与 SKILL.md">
+      <img src="docs/images/skill-editor.svg" alt="新增技能与 SKILL.md">
       <br><strong>新增技能</strong>：配置 SKILL.md、references、输入材料和交付物。
     </td>
   </tr>
   <tr>
     <td width="50%">
-      <img src="docs/images/tasks.png" alt="任务队列与任务详情">
+      <img src="docs/images/tasks.svg" alt="任务队列与任务详情">
       <br><strong>任务队列</strong>：按状态查看任务、租约、材料、交付物和时间线。
     </td>
     <td width="50%">
-      <img src="docs/images/mcp-service.png" alt="MCP 服务状态">
+      <img src="docs/images/mcp-service.svg" alt="MCP 服务状态">
       <br><strong>MCP 服务</strong>：查看本机端点、访问凭据与最近领取/提交记录。
     </td>
   </tr>
