@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="820" viewBox="0 0 1200 820">
+<style>
+text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;fill:#1f2329}
+.m{fill:#6b7280}.b{font-weight:700}.s{font-size:13px}.sm{font-size:12px}.h{font-size:22px;font-weight:700}
+.card{fill:#fff;stroke:#dfe3e8;stroke-width:1}.soft{fill:#f4f5f7}.blue{fill:#2563eb}.green{fill:#16a34a}.amber{fill:#b45309}.red{fill:#dc2626}
+</style><rect width="1200" height="820" fill="#f4f5f7"/>
+<rect x="24" y="22" width="30" height="30" rx="8" class="blue"/><text x="66" y="45" class="h">技能任务</text><text x="150" y="43" class="sm m">示例界面</text>
+<line x1="24" y1="82" x2="1176" y2="82" stroke="#dfe3e8" stroke-width="2"/>
+<text x="150" y="72" class="s " fill="#6b7280">技能组</text><text x="395" y="72" class="s " fill="#6b7280">任务</text><text x="640" y="72" class="s b" fill="#2563eb">MCP 服务</text><rect x="620" y="79" width="90" height="3" rx="2" class="blue"/><text x="885" y="72" class="s " fill="#6b7280">设置</text>
+
+<rect x="24" y="105" width="1152" height="365" rx="10" class="card"/><text x="50" y="140" class="b">MCP 服务</text><rect x="145" y="121" width="84" height="26" rx="13" fill="#e7f7ec"/><text x="164" y="139" class="sm" fill="#16a34a">正在运行</text>
+<text x="50" y="182" class="sm m">服务开关</text><rect x="140" y="163" width="42" height="22" rx="11" class="green"/><text x="195" y="181" class="s">已启用</text>
+<text x="50" y="225" class="sm m">主机</text><rect x="140" y="204" width="990" height="34" rx="6" class="soft"/><text x="155" y="226" class="s">127.0.0.1</text>
+<text x="50" y="270" class="sm m">服务端点</text><rect x="140" y="248" width="850" height="36" rx="6" class="soft"/><text x="155" y="271" class="s">http://127.0.0.1:23119/skilltask/mcp</text>
+<rect x="50" y="305" width="1080" height="52" rx="8" fill="#fbf1e7"/><text x="68" y="337" class="sm" fill="#b45309">当前端点仅通过 Zotero loopback Connector Server 提供，不直接暴露到局域网。</text>
+<text x="50" y="397" class="sm m">访问凭据</text><rect x="140" y="378" width="42" height="22" rx="11" fill="#dfe3e8"/><text x="195" y="396" class="s">已关闭</text>
+<text x="50" y="438" class="sm m">支持 MCP 2026-07-28、2025-11-25、2025-06-18、2025-03-26、2024-11-05</text>
+<rect x="24" y="490" width="1152" height="245" rx="10" class="card"/><text x="50" y="525" class="b">最近领取 / 提交记录</text>
+<text x="55" y="570" class="green">✓</text><text x="85" y="570" class="s">完成　DEMO0001</text><text x="310" y="570" class="sm m">结构化摘要助手 · summary.md · attachment ATTACH01</text><text x="1080" y="570" class="sm m">2 分钟前</text>
+<line x1="50" y1="592" x2="1130" y2="592" stroke="#dfe3e8"/><text x="55" y="625" class="blue">↯</text><text x="85" y="625" class="s">领取　DEMO0002</text><text x="310" y="625" class="sm m">结构化摘要助手 · lease 至 18:42</text><text x="1080" y="625" class="sm m">5 分钟前</text>
+<line x1="50" y1="647" x2="1130" y2="647" stroke="#dfe3e8"/><text x="55" y="680" class="green">✓</text><text x="85" y="680" class="s">更正提交　DEMO0003</text><text x="310" y="680" class="sm m">结构化摘要助手 · summary.md · 成功提交次数 2</text></svg>
