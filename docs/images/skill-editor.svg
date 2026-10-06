@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="820" viewBox="0 0 1200 820">
+<style>
+text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;fill:#1f2329}
+.m{fill:#6b7280}.b{font-weight:700}.s{font-size:13px}.sm{font-size:12px}.h{font-size:22px;font-weight:700}
+.card{fill:#fff;stroke:#dfe3e8;stroke-width:1}.soft{fill:#f4f5f7}.blue{fill:#2563eb}.green{fill:#16a34a}.amber{fill:#b45309}.red{fill:#dc2626}
+</style><rect width="1200" height="820" fill="#f4f5f7"/>
+<rect x="24" y="22" width="30" height="30" rx="8" class="blue"/><text x="66" y="45" class="h">技能任务</text><text x="150" y="43" class="sm m">示例界面</text>
+<line x1="24" y1="82" x2="1176" y2="82" stroke="#dfe3e8" stroke-width="2"/>
+<text x="150" y="72" class="s b" fill="#2563eb">技能组</text><rect x="130" y="79" width="90" height="3" rx="2" class="blue"/><text x="395" y="72" class="s " fill="#6b7280">任务</text><text x="640" y="72" class="s " fill="#6b7280">MCP 服务</text><text x="885" y="72" class="s " fill="#6b7280">设置</text>
+
+<rect x="24" y="105" width="1152" height="650" rx="10" fill="#fff" stroke="#2563eb" stroke-dasharray="5 4"/>
+<text x="48" y="140" class="b">新增技能</text><text x="48" y="175" class="s b">名称 *</text><rect x="48" y="185" width="1080" height="34" rx="6" class="card"/><text x="62" y="207" class="s">结构化摘要助手</text>
+<text x="48" y="252" class="s b">技能说明</text><rect x="48" y="262" width="1080" height="72" rx="6" class="card"/><text x="62" y="290" class="s">根据文献元数据、摘要和正文生成结构化摘要，便于后续检索与复用。</text>
+<text x="48" y="370" class="s b">SKILL.md 技能文件</text><rect x="48" y="382" width="1080" height="92" rx="10" fill="#fafbfc" stroke="#dfe3e8" stroke-dasharray="5 4"/><text x="410" y="420" class="b">拖入 SKILL.md，或单击选择文件</text><text x="438" y="447" class="sm m">自动读取 YAML front matter 中的 name / description</text>
+<rect x="48" y="487" width="1080" height="32" rx="6" class="soft"/><text x="62" y="508" class="sm m">已选择：summary-skill.md　·　6.8 KB　·　已读取名称与说明</text>
+<text x="48" y="555" class="s b">references/ 参考资料</text><rect x="48" y="566" width="1080" height="88" rx="10" fill="#fafbfc" stroke="#dfe3e8" stroke-dasharray="5 4"/><text x="445" y="606" class="b">拖入参考文件，或单击选择</text><text x="468" y="633" class="sm m">可上传 Markdown / PDF / 文本等文件</text>
+<text x="48" y="700" class="s b">交付物</text><text x="135" y="700" class="s">Markdown 文件　·　目标文件名 summary.md　·　同名附件：覆盖旧附件</text></svg>
