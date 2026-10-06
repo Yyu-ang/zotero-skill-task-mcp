@@ -73,7 +73,17 @@ const MCP_LEGACY_PROTOCOL_VERSIONS = [
   '2024-11-05',
 ] as const;
 const MCP_LEGACY_PROTOCOL_VERSION = MCP_LEGACY_PROTOCOL_VERSIONS[0];
+/** Streamable HTTP 中缺少版本头时按 2025-03-26 解释（该版本引入此 header）。 */
+const MCP_LEGACY_HEADER_DEFAULT_VERSION = '2025-03-26';
 const MCP_MODERN_PROTOCOL_VERSION = '2026-07-28';
+
+function supportsStructuredOutput(protocolVersion: string): boolean {
+  return (
+    protocolVersion === MCP_MODERN_PROTOCOL_VERSION ||
+    protocolVersion === '2025-11-25' ||
+    protocolVersion === '2025-06-18'
+  );
+}
 const PROTOCOL_VERSION_META_KEY = 'io.modelcontextprotocol/protocolVersion';
 const CLIENT_CAPABILITIES_META_KEY = 'io.modelcontextprotocol/clientCapabilities';
 const SERVER_INFO_META_KEY = 'io.modelcontextprotocol/serverInfo';
@@ -578,9 +588,23 @@ export class McpServer implements IMcpServer {
         envelopeVersion
       );
       if (rejection) return rejection;
+    } else if (
+      headerVersion &&
+      !(MCP_LEGACY_PROTOCOL_VERSIONS as readonly string[]).includes(headerVersion)
+    ) {
+      return this.jsonErrStatus(
+        rpc?.id ?? null,
+        400,
+        UNSUPPORTED_PROTOCOL_VERSION,
+        `Unsupported protocol version: ${headerVersion}`,
+        { supportedVersions: [...MCP_LEGACY_PROTOCOL_VERSIONS] }
+      );
     }
 
-    return this.dispatch(rpc, modernAttempt);
+    const protocolVersion = modernAttempt
+      ? MCP_MODERN_PROTOCOL_VERSION
+      : headerVersion || MCP_LEGACY_HEADER_DEFAULT_VERSION;
+    return this.dispatch(rpc, modernAttempt, protocolVersion);
   }
 
   /**
@@ -696,7 +720,8 @@ export class McpServer implements IMcpServer {
 
   private async dispatch(
     rpc: any,
-    modern: boolean
+    modern: boolean,
+    protocolVersion: string
   ): Promise<[number, string, string]> {
     const method = rpc?.method;
     const id = rpc?.id;
@@ -1095,13 +1120,16 @@ export class McpServer implements IMcpServer {
   private toolOk(
     id: unknown,
     result: unknown,
-    modern: boolean
+    modern: boolean,
+    protocolVersion: string
   ): [number, string, string] {
     return this.jsonOk(
       id,
       {
         content: [{ type: 'text', text: JSON.stringify(result) }],
-        ...(modern ? { structuredContent: result } : {}),
+        ...(supportsStructuredOutput(protocolVersion)
+          ? { structuredContent: result }
+          : {}),
       },
       modern
     );
