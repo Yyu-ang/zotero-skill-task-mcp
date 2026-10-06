@@ -1824,29 +1824,75 @@ export class McpServer implements IMcpServer {
     return res;
   }
 
-  /** 写内建笔记（note / markdown→note 共用） */
+  /** 写内建笔记（note / markdown→note 共用）；revision 时优先原位更新既有笔记。 */
   private async submitNote(
     task: Task,
     parent: any,
     html: string,
-    dtype: 'note' | 'markdown'
+    dtype: 'note' | 'markdown',
+    revision = false
   ): Promise<SubmitResult> {
-    // 写回安全：清理后再校验（需求 §8）
     const clean = sanitizeNoteHtml(html);
     if (!clean) {
       return { ok: false, error: 'empty-note-after-sanitize' };
     }
     try {
-      const noteKey = await this.createChildNote(parent, clean);
-      await this.tasks.complete(task.id, {
+      let noteKey: string;
+      if (revision && task.noteKey) {
+        const existingNote = this.resolveItemByKey(task.noteKey);
+        if (existingNote && existingNote.isNote?.()) {
+          existingNote.setNote(clean);
+          await existingNote.saveTx();
+          noteKey = task.noteKey;
+        } else {
+          noteKey = await this.createChildNote(parent, clean);
+        }
+      } else {
+        noteKey = await this.createChildNote(parent, clean);
+      }
+
+      const saved = revision
+        ? await this.tasks.reviseComplete(task.id, {
+            noteKey,
+            deliverableType: dtype,
+            deliverableRef: noteKey,
+          })
+        : await this.tasks.complete(task.id, {
+            noteKey,
+            deliverableType: dtype,
+            deliverableRef: noteKey,
+          });
+      log(
+        revision ? 'revise ok:' : 'submit ok:',
+        task.id,
+        `-> note(${dtype})`,
+        noteKey
+      );
+      return {
+        ok: true,
         noteKey,
         deliverableType: dtype,
-        deliverableRef: noteKey,
-      });
-      log('submit ok:', task.id, `-> note(${dtype})`, noteKey);
-      return { ok: true, noteKey, deliverableType: dtype };
+        ...(revision ? { revised: true } : {}),
+        submissionCount: saved.submissionCount,
+      };
     } catch (e) {
-      return this.failSubmit(task, e, 'note');
+      return this.failSubmit(task, e, revision ? 'note-revise' : 'note');
+    }
+  }
+
+  /** 在全部文库中按 key 找条目；用于 revision 原位更新历史笔记/附件。 */
+  private resolveItemByKey(itemKey: string): any | null {
+    try {
+      const Z = zoteroGlobal();
+      if (!Z?.Items?.getByLibraryAndKey || !Z?.Libraries?.getAll) return null;
+      const libs = Z.Libraries.getAll() as Array<{ libraryID: number }>;
+      for (const lib of libs) {
+        const item = Z.Items.getByLibraryAndKey(lib.libraryID, itemKey);
+        if (item && item !== false) return item;
+      }
+      return null;
+    } catch {
+      return null;
     }
   }
 
@@ -1865,15 +1911,16 @@ export class McpServer implements IMcpServer {
   }
 
   /**
-   * 写文件交付物：存入受控输出目录（<数据目录>/skilltask/deliverables/<taskId>/），
-   * attachToItem 时挂成父条目附件。日志只记录文件名与大小，绝不输出内容。
+   * 写文件交付物：存入受控输出目录。
+   * revision 时显式覆盖现有交付物，并在可行时直接覆盖既有附件文件以保留 attachmentKey。
    */
   private async submitFile(
     task: Task,
     parent: any,
     deliverable: SkillDeliverable,
     fileName: string,
-    bytes: Uint8Array
+    bytes: Uint8Array,
+    revision = false
   ): Promise<SubmitResult> {
     const dtype = deliverable.type === 'markdown' ? 'markdown' : 'file';
     const attach =
@@ -1888,16 +1935,17 @@ export class McpServer implements IMcpServer {
         : deliverable.type === 'markdown' && deliverable.target === 'file'
           ? deliverable.existingAttachmentPolicy ?? 'skip'
           : 'skip';
+
     try {
       const existing = attach
         ? await findChildAttachmentsByFilename(parent, fileName)
         : [];
 
-      // 竞态保护：扫描后到提交前若已有同名附件，skip 仍应幂等完成。
-      if (attach && existing.length && policy === 'skip') {
+      // 普通 submit 保持原 skip 语义；显式 revision 必须真正覆盖，不被 skip 截断。
+      if (!revision && attach && existing.length && policy === 'skip') {
         const existingKey =
           typeof existing[0]?.key === 'string' ? existing[0].key : null;
-        await this.tasks.complete(task.id, {
+        const saved = await this.tasks.complete(task.id, {
           noteKey: null,
           deliverableType: dtype,
           deliverableRef: fileName,
@@ -1909,44 +1957,104 @@ export class McpServer implements IMcpServer {
           attachmentKey: existingKey ?? undefined,
           deliverableType: dtype,
           duplicate: true,
+          submissionCount: saved.submissionCount,
         };
       }
 
       const { dir, dest, rel } = this.deliverablePaths(task.id, fileName);
       await this.writeBytes(dir, dest, bytes);
       log(
-        'submit file saved:',
+        revision ? 'revise file saved:' : 'submit file saved:',
         task.id,
         rel,
         `${bytes.length} bytes`
       );
+
       let attachmentKey: string | null = null;
       if (attach) {
-        attachmentKey = await this.attachFileToParent(parent, dest);
-        if (existing.length && policy === 'overwrite') {
+        // revision 优先覆写任务记录中的原附件，保持 attachmentKey 稳定。
+        if (revision && task.attachmentKey) {
+          const replaced = await this.replaceAttachmentBytes(
+            task.attachmentKey,
+            bytes
+          );
+          if (replaced) {
+            attachmentKey = task.attachmentKey;
+          }
+        }
+
+        // 原附件不存在/不可写时退化为重新导入，再删除旧同名附件。
+        if (!attachmentKey) {
+          attachmentKey = await this.attachFileToParent(parent, dest);
+        }
+
+        if (
+          revision ||
+          (existing.length && policy === 'overwrite')
+        ) {
           await eraseAttachments(
             existing.filter((att: any) => att?.key !== attachmentKey)
           );
         }
       }
-      await this.tasks.complete(task.id, {
-        noteKey: null,
-        deliverableType: dtype,
-        deliverableRef: rel,
-        attachmentKey,
-      });
-      log('submit ok:', task.id, `-> file(${dtype})`, rel);
+
+      const saved = revision
+        ? await this.tasks.reviseComplete(task.id, {
+            noteKey: null,
+            deliverableType: dtype,
+            deliverableRef: rel,
+            attachmentKey,
+          })
+        : await this.tasks.complete(task.id, {
+            noteKey: null,
+            deliverableType: dtype,
+            deliverableRef: rel,
+            attachmentKey,
+          });
+
+      log(
+        revision ? 'revise ok:' : 'submit ok:',
+        task.id,
+        `-> file(${dtype})`,
+        rel
+      );
       const res: SubmitResult = {
         ok: true,
         fileName: rel,
         deliverableType: dtype,
+        ...(revision ? { revised: true } : {}),
+        submissionCount: saved.submissionCount,
       };
       if (attachmentKey) {
         res.attachmentKey = attachmentKey;
       }
       return res;
     } catch (e) {
-      return this.failSubmit(task, e, 'file');
+      return this.failSubmit(task, e, revision ? 'file-revise' : 'file');
+    }
+  }
+
+  /** revision 时直接覆盖已挂附件的底层文件；成功返回 true。 */
+  private async replaceAttachmentBytes(
+    attachmentKey: string,
+    bytes: Uint8Array
+  ): Promise<boolean> {
+    try {
+      const attachment = this.resolveItemByKey(attachmentKey);
+      if (!attachment || !attachment.isAttachment?.()) return false;
+      let absPath = '';
+      if (typeof attachment.getFilePathAsync === 'function') {
+        absPath = String((await attachment.getFilePathAsync()) ?? '');
+      } else if (typeof attachment.getFilePath === 'function') {
+        absPath = String(attachment.getFilePath() ?? '');
+      }
+      if (!absPath) return false;
+      const g = globalThis as any;
+      if (typeof g.IOUtils?.write !== 'function') return false;
+      await g.IOUtils.write(absPath, bytes);
+      return true;
+    } catch {
+      return false;
     }
   }
 
