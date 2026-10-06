@@ -749,7 +749,7 @@ export class McpServer implements IMcpServer {
               supportedVersions: [MCP_MODERN_PROTOCOL_VERSION],
               capabilities: { tools: {} },
               instructions:
-                'Use tools/list, then skilltask_claim / skilltask_inject_skill / skilltask_submit as needed.',
+                'Use tools/list, then skilltask_claim / skilltask_renew / skilltask_release / skilltask_status / skilltask_inject_skill / skilltask_submit as needed.',
             },
             true
           );
@@ -783,8 +783,48 @@ export class McpServer implements IMcpServer {
             required: ['name', 'path', 'size'],
           };
           const deliverableSchema = {
-            type: 'object',
             description: '技能组声明的交付物配置。',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  type: { type: 'string', const: 'note' },
+                },
+                required: ['type'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  type: { type: 'string', const: 'file' },
+                  attachToItem: { type: 'boolean' },
+                  allowedExtensions: {
+                    type: 'array',
+                    items: { type: 'string' },
+                  },
+                  maxBytes: { type: 'integer', minimum: 1 },
+                  targetFileName: { type: 'string' },
+                  existingAttachmentPolicy: {
+                    type: 'string',
+                    enum: ['overwrite', 'skip'],
+                  },
+                },
+                required: ['type'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  type: { type: 'string', const: 'markdown' },
+                  target: { type: 'string', enum: ['note', 'file'] },
+                  attachToItem: { type: 'boolean' },
+                  targetFileName: { type: 'string' },
+                  existingAttachmentPolicy: {
+                    type: 'string',
+                    enum: ['overwrite', 'skip'],
+                  },
+                },
+                required: ['type', 'target'],
+              },
+            ],
           };
           const tools: any[] = [
             {
