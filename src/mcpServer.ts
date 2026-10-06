@@ -1132,15 +1132,27 @@ export class McpServer implements IMcpServer {
           const args = rpc?.params?.arguments ?? {};
           if (name === 'skilltask_claim') {
             const result = await this.claim(args);
-            return this.toolOk(id, result, modern);
+            return this.toolOk(id, result, modern, protocolVersion);
+          }
+          if (name === 'skilltask_renew') {
+            const result = await this.renew(args);
+            return this.toolOk(id, result, modern, protocolVersion);
+          }
+          if (name === 'skilltask_release') {
+            const result = await this.release(args);
+            return this.toolOk(id, result, modern, protocolVersion);
+          }
+          if (name === 'skilltask_status') {
+            const result = await this.status(args);
+            return this.toolOk(id, result, modern, protocolVersion);
           }
           if (name === 'skilltask_inject_skill') {
             const result = await this.injectSkill(args);
-            return this.toolOk(id, result, modern);
+            return this.toolOk(id, result, modern, protocolVersion);
           }
           if (name === 'skilltask_submit') {
             const result = await this.submit(args);
-            return this.toolOk(id, result, modern);
+            return this.toolOk(id, result, modern, protocolVersion);
           }
           return this.jsonErr(
             id,
@@ -1237,8 +1249,9 @@ export class McpServer implements IMcpServer {
 
   /**
    * tools/call 成功响应：
-   * - legacy：保留 content[].text 的旧行为；
-   * - 2026：额外提供 structuredContent，并由 jsonOk 加 resultType/serverInfo。
+   * - 所有版本都保留 content[].text，兼容只读文本的客户端；
+   * - 2025-06-18 / 2025-11-25 / 2026-07-28 同时返回 structuredContent；
+   * - 2025-03-26 / 2024-11-05 不声明 outputSchema，也不返回 structuredContent。
    */
   private toolOk(
     id: unknown,
@@ -1256,6 +1269,111 @@ export class McpServer implements IMcpServer {
       },
       modern
     );
+  }
+
+  // ──────────── agent queue control ────────────
+
+  private async renew(params: any): Promise<Record<string, unknown>> {
+    const taskId =
+      typeof params?.taskId === 'string' ? params.taskId.trim() : '';
+    if (!taskId) return { ok: false, error: 'missing-taskId' };
+    const task = this.tasks.get(taskId);
+    if (!task) return { ok: false, error: 'task-not-found' };
+    if (task.status !== 'claimed') {
+      return { ok: false, error: `task-not-claimed:${task.status}` };
+    }
+    try {
+      const renewed = await this.tasks.renewLease(taskId, getLeaseMs());
+      return {
+        ok: true,
+        taskId,
+        leaseExpiresAt: renewed.leaseExpiresAt,
+      };
+    } catch (e) {
+      return { ok: false, error: errMsg(e) };
+    }
+  }
+
+  private async release(params: any): Promise<Record<string, unknown>> {
+    const taskId =
+      typeof params?.taskId === 'string' ? params.taskId.trim() : '';
+    if (!taskId) return { ok: false, error: 'missing-taskId' };
+    const task = this.tasks.get(taskId);
+    if (!task) return { ok: false, error: 'task-not-found' };
+    if (task.status !== 'claimed') {
+      return { ok: false, error: `task-not-claimed:${task.status}` };
+    }
+    try {
+      const released = await this.tasks.releaseLease(taskId);
+      return { ok: true, taskId, status: released.status };
+    } catch (e) {
+      return { ok: false, error: errMsg(e) };
+    }
+  }
+
+  private async status(params: any): Promise<Record<string, unknown>> {
+    const skillGroupId =
+      typeof params?.skillGroupId === 'string' && params.skillGroupId.trim()
+        ? params.skillGroupId.trim()
+        : undefined;
+    if (skillGroupId && !this.skillGroups.get(skillGroupId)) {
+      return { ok: false, error: 'skill-group-not-found' };
+    }
+    try {
+      await this.tasks.releaseExpiredLeases();
+    } catch {
+      // 状态读取仍可基于当前内存快照返回。
+    }
+    const tasks = this.tasks.list(
+      skillGroupId ? { skillGroupId } : undefined
+    );
+    const blankCounts = () => ({
+      'waiting-material': 0,
+      pending: 0,
+      claimed: 0,
+      done: 0,
+      failed: 0,
+      cancelled: 0,
+    });
+    const counts = blankCounts();
+    for (const task of tasks) {
+      counts[task.status] += 1;
+    }
+    const claimed = tasks
+      .filter((task) => task.status === 'claimed')
+      .map((task) => ({
+        id: task.id,
+        skillGroupId: task.skillGroupId,
+        itemKey: task.itemKey,
+        leaseExpiresAt: task.leaseExpiresAt,
+      }));
+    const groups = this.skillGroups
+      .list(true)
+      .filter((group) => !skillGroupId || group.id === skillGroupId)
+      .map((group) => {
+        const groupTasks = tasks.filter(
+          (task) => task.skillGroupId === group.id
+        );
+        const groupCounts = blankCounts();
+        for (const task of groupTasks) {
+          groupCounts[task.status] += 1;
+        }
+        return {
+          id: group.id,
+          name: group.name,
+          enabled: group.enabled,
+          archived: group.archived,
+          total: groupTasks.length,
+          counts: groupCounts,
+        };
+      });
+    return {
+      ok: true,
+      total: tasks.length,
+      counts,
+      claimed,
+      skillGroups: groups,
+    };
   }
 
   // ──────────── skill injection ────────────
