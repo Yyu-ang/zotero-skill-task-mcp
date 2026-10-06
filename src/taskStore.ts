@@ -224,6 +224,7 @@ export class TaskStore implements ITaskStore {
       status,
       leaseExpiresAt: null,
       attempts: 0,
+      submissionCount: 0,
       lastError: null,
       noteKey: null,
       deliverableType: null,
@@ -270,6 +271,7 @@ export class TaskStore implements ITaskStore {
       status: 'done',
       leaseExpiresAt: null,
       attempts: 0,
+      submissionCount: 1,
       lastError: null,
       noteKey:
         typeof result.noteKey === 'string' && result.noteKey
@@ -357,6 +359,41 @@ export class TaskStore implements ITaskStore {
   }
 
   /**
+   * 续租：仅 claimed 且当前租约未过期时允许。
+   * 每次从当前 leaseExpiresAt 向后增加一个 lease 长度，避免续租调用缩短租约。
+   */
+  @traced
+  async renewLease(id: string, leaseMs: number): Promise<Task> {
+    const task = this.require(id);
+    if (task.status !== 'claimed') {
+      throw new Error(`只有已领取任务可续租，当前状态：${task.status}`);
+    }
+    const now = Date.now();
+    if (task.leaseExpiresAt === null || task.leaseExpiresAt <= now) {
+      await this.releaseExpiredLeases(now);
+      throw new Error('lease-expired');
+    }
+    const safeLeaseMs =
+      Number.isFinite(leaseMs) && leaseMs > 0 ? Math.floor(leaseMs) : getLeaseMs();
+    task.leaseExpiresAt = task.leaseExpiresAt + safeLeaseMs;
+    await this.persist();
+    return { ...task };
+  }
+
+  /** 主动归还：仅 claimed 状态允许，归还后立即回到 pending。 */
+  @traced
+  async releaseLease(id: string): Promise<Task> {
+    const task = this.require(id);
+    if (task.status !== 'claimed') {
+      throw new Error(`只有已领取任务可归还，当前状态：${task.status}`);
+    }
+    task.status = 'pending';
+    task.leaseExpiresAt = null;
+    await this.persist();
+    return { ...task };
+  }
+
+  /**
    * 完成任务：置 done、completedAt=now、记录交付物引用，并清除租约。
    * 已 done 直接返回原任务（幂等：重复提交不抛错、引用不变）。
    */
@@ -390,6 +427,42 @@ export class TaskStore implements ITaskStore {
         ? result.noteKey
         : null;
     task.leaseExpiresAt = null;
+    task.submissionCount = Math.max(1, task.submissionCount || 0);
+    await this.persist();
+    return { ...task };
+  }
+
+  /**
+   * 更正已完成任务的交付物记录。只允许 done，保持 done 状态与 completedAt，
+   * 更新交付物引用并递增 submissionCount。
+   */
+  @traced
+  async reviseComplete(id: string, result: TaskCompleteResult): Promise<Task> {
+    const task = this.require(id);
+    if (task.status !== 'done') {
+      throw new Error(`只有已完成任务可更正，当前状态：${task.status}`);
+    }
+    if (
+      result.deliverableType !== 'note' &&
+      result.deliverableType !== 'file' &&
+      result.deliverableType !== 'markdown'
+    ) {
+      throw new Error('更正任务失败：交付物类型无效');
+    }
+    if (typeof result.deliverableRef !== 'string' || !result.deliverableRef.trim()) {
+      throw new Error('更正任务失败：交付物引用无效');
+    }
+    task.deliverableType = result.deliverableType;
+    task.deliverableRef = result.deliverableRef;
+    task.attachmentKey =
+      typeof result.attachmentKey === 'string' && result.attachmentKey
+        ? result.attachmentKey
+        : null;
+    task.noteKey =
+      typeof result.noteKey === 'string' && result.noteKey
+        ? result.noteKey
+        : null;
+    task.submissionCount = Math.max(1, task.submissionCount || 1) + 1;
     await this.persist();
     return { ...task };
   }
@@ -546,6 +619,12 @@ function normalizeTask(item: unknown): Task | null {
     leaseExpiresAt:
       typeof raw.leaseExpiresAt === 'number' ? raw.leaseExpiresAt : null,
     attempts: typeof raw.attempts === 'number' ? raw.attempts : 0,
+    submissionCount:
+      typeof raw.submissionCount === 'number' && raw.submissionCount >= 0
+        ? Math.floor(raw.submissionCount)
+        : status === 'done'
+          ? 1
+          : 0,
     lastError: typeof raw.lastError === 'string' ? raw.lastError : null,
     noteKey: typeof raw.noteKey === 'string' ? raw.noteKey : null,
     deliverableType:

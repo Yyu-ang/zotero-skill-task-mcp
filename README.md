@@ -71,13 +71,25 @@ description: 这个技能用来……
 
 ### 3. AI 领取任务
 
-外部 AI 通过 MCP 调用：
+外部 AI 主要使用这些 MCP 工具：
 
 - `skilltask_claim`：领取下一条任务
-- `skilltask_submit`：提交结果
+- `skilltask_renew`：任务处理较久时续租一个完整租约周期
+- `skilltask_release`：主动归还已领取任务
+- `skilltask_status`：只读查看队列计数和当前 claimed 租约
+- `skilltask_submit`：提交结果；已完成任务需要更正时显式传 `revise=true`
 - `skilltask_inject_skill`：向插件新增技能
 
-每次领取最多返回一条任务，避免多个 AI 同时处理同一条任务。
+每次 `skilltask_claim` 最多返回一条任务。常用字段都在返回的 `task` 对象中：
+
+- `task.id`：后续 renew / release / submit 使用的任务 ID
+- `task.itemKey`：目标 Zotero 条目
+- `task.leaseExpiresAt`：当前租约过期时间
+- `task.deliverable`：本任务要求的交付物格式
+- `task.skillAssets`：`SKILL.md` 与 references 文件清单
+- `materials`：该技能允许 AI 使用的文献材料
+
+普通重复提交仍然保持幂等，不会产生第二份交付物。只有显式 `revise=true` 才会更正已经完成的结果；插件会优先原位更新原笔记/附件，并记录成功提交次数。
 
 ### 4. 查看结果
 
@@ -143,7 +155,11 @@ result.json
 - MCP 2025-03-26
 - MCP 2024-11-05
 
-旧版客户端通过 `initialize` 协商协议版本；新版客户端可使用 2026-07-28 的无状态协议。
+旧版客户端通过 `initialize` 协商协议版本；后续 Streamable HTTP 请求应携带协商后的 `MCP-Protocol-Version`。其中：
+
+- `2025-06-18`、`2025-11-25`：工具声明 `outputSchema`，调用结果同时返回 `content` 与 `structuredContent`
+- `2025-03-26`、`2024-11-05`：保留旧式 `content` JSON 文本，不声明 `outputSchema`
+- `2026-07-28`：使用无状态 envelope/header，并返回 `structuredContent`、`resultType` 与 server metadata
 
 ## 设置
 

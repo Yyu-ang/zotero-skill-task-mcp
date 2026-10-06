@@ -209,6 +209,7 @@ panel-detail-sg = Skill group
 panel-detail-sg-deleted = (skill group deleted)
 panel-detail-sg-version = Skill group version
 panel-detail-attempts = Attempts
+panel-detail-submissions = Successful submissions
 panel-detail-instruction = Instruction snapshot at claim
 panel-detail-instruction-empty = (empty)
 panel-detail-materials = Material list (per current skill group config)

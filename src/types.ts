@@ -162,8 +162,10 @@ export interface Task {
   status: TaskStatus;
   /** 租约过期时间（claimed 时设置），null 表示无租约 */
   leaseExpiresAt: number | null;
-  /** 领取/提交尝试次数 */
+  /** 领取尝试次数 */
   attempts: number;
+  /** 成功提交次数：首次完成=1；后续 revise 每次 +1 */
+  submissionCount: number;
   lastError: string | null;
   /** 完成时创建的 Zotero 笔记 key（note / markdown→note 时；历史兼容字段） */
   noteKey: string | null;
@@ -245,6 +247,10 @@ export interface SubmitResult {
   deliverableType?: 'note' | 'file' | 'markdown';
   /** 重复提交（幂等命中）时为 true */
   duplicate?: boolean;
+  /** revise=true 且成功更正既有交付物时为 true */
+  revised?: boolean;
+  /** 当前成功提交次数（首次完成=1；每次 revise +1） */
+  submissionCount?: number;
   error?: string;
 }
 
@@ -333,11 +339,17 @@ export interface ITaskStore {
   ): Promise<Task | null>;
   /** 过期租约 → pending，返回释放数量 */
   releaseExpiredLeases(now?: number): Promise<number>;
+  /** claimed 且未过期时，把当前 lease 再延长 leaseMs。 */
+  renewLease(id: string, leaseMs: number): Promise<Task>;
+  /** 主动归还 claimed 任务：claimed → pending。 */
+  releaseLease(id: string): Promise<Task>;
   /**
    * 完成：置 done、completedAt=now、记录交付物引用，并清除租约。
    * 已 done 直接返回原任务（幂等：重复提交不抛错、引用不变）。
    */
   complete(id: string, result: TaskCompleteResult): Promise<Task>;
+  /** 更正已完成任务的交付物引用，并把 submissionCount +1。 */
+  reviseComplete(id: string, result: TaskCompleteResult): Promise<Task>;
   fail(id: string, error: string): Promise<Task>;
   cancel(id: string): Promise<void>;
   /** failed → pending（attempts 保留） */

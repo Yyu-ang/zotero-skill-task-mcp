@@ -131,6 +131,55 @@ assert.ok(
     !mcpTs.includes("JSON.parse(String(requestData?.data"),
   'MCP endpoint must accept Zotero.Server pre-parsed application/json payloads'
 );
+
+assert.ok(
+  mcpTs.includes("const MCP_LEGACY_HEADER_DEFAULT_VERSION = '2025-03-26'") &&
+    mcpTs.includes('function supportsStructuredOutput(protocolVersion: string)') &&
+    mcpTs.includes("protocolVersion === '2025-11-25'") &&
+    mcpTs.includes("protocolVersion === '2025-06-18'") &&
+    mcpTs.includes('supportsStructuredOutput(protocolVersion)') &&
+    mcpTs.includes('for (const tool of tools) delete tool.outputSchema'),
+  'structured MCP tool output must be gated by protocol revision, not modern/legacy envelope'
+);
+assert.ok(
+  mcpTs.includes("name: 'skilltask_renew'") &&
+    mcpTs.includes("name: 'skilltask_release'") &&
+    mcpTs.includes("name: 'skilltask_status'") &&
+    mcpTs.includes('this.renew(args)') &&
+    mcpTs.includes('this.release(args)') &&
+    mcpTs.includes('this.status(args)'),
+  'MCP must expose renew, release, and read-only queue status tools'
+);
+assert.ok(
+  mcpTs.includes("id: { type: 'string' }") &&
+    mcpTs.includes("itemKey: { type: 'string' }") &&
+    mcpTs.includes("leaseExpiresAt: { type: 'number' }") &&
+    mcpTs.includes('skillAssets: {') &&
+    mcpTs.includes('deliverable: deliverableSchema') &&
+    mcpTs.includes('abstractNote: { type:') &&
+    mcpTs.includes('pdfPath: { type:'),
+  'claim output schema must describe the task and material fields agents actually consume'
+);
+assert.ok(
+  mcpTs.includes("const revise = params?.revise === true") &&
+    mcpTs.includes('await this.tasks.reviseComplete(') &&
+    mcpTs.includes('replaceAttachmentBytes(') &&
+    mcpTs.includes('{ revised: true }'),
+  'explicit revise=true must update completed deliverables while ordinary duplicate submit stays idempotent'
+);
+assert.ok(
+  taskStoreTs.includes('async renewLease(') &&
+    taskStoreTs.includes('task.leaseExpiresAt = task.leaseExpiresAt + safeLeaseMs') &&
+    taskStoreTs.includes('async releaseLease(') &&
+    taskStoreTs.includes('async reviseComplete(') &&
+    taskStoreTs.includes('submissionCount'),
+  'task store must persist lease control and completed-deliverable revisions'
+);
+assert.ok(
+  panelTs.includes("getString('panel-detail-submissions')") &&
+    panelTs.includes('t.submissionCount'),
+  'task detail must expose successful submission/revision count'
+);
 assert.ok(
   mcpTs.includes("prefs.get(PREF_MCP_TOKEN_ENABLED, false)") &&
     addonPrefs.includes('pref("extensions.zotero-skill-task.mcp.tokenEnabled", false)'),

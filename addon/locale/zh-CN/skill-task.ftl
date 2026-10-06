@@ -209,6 +209,7 @@ panel-detail-sg = 技能组
 panel-detail-sg-deleted = （技能组已删除）
 panel-detail-sg-version = 技能组版本
 panel-detail-attempts = 尝试次数
+panel-detail-submissions = 成功提交次数
 panel-detail-instruction = 领取时指令快照
 panel-detail-instruction-empty = （空）
 panel-detail-materials = 材料清单（按技能组当前配置）

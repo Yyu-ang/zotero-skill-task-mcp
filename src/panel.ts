@@ -2227,6 +2227,12 @@ function taskDetail(t: Task): HTMLElement {
   grid.append(detailKV(getString('panel-detail-sg'), sg?.name ?? getString('panel-detail-sg-deleted')));
   grid.append(detailKV(getString('panel-detail-sg-version'), `v${t.skillGroupVersion}`));
   grid.append(detailKV(getString('panel-detail-attempts'), String(t.attempts)));
+  grid.append(
+    detailKV(
+      getString('panel-detail-submissions'),
+      String(t.submissionCount ?? (t.status === 'done' ? 1 : 0))
+    )
+  );
   d.append(grid);
 
   const itemOps = el('div', 'ops');
