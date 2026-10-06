@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="820" viewBox="0 0 1200 820">
+<style>
+text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;fill:#1f2329}
+.m{fill:#6b7280}.b{font-weight:700}.s{font-size:13px}.sm{font-size:12px}.h{font-size:22px;font-weight:700}
+.card{fill:#fff;stroke:#dfe3e8;stroke-width:1}.soft{fill:#f4f5f7}.blue{fill:#2563eb}.green{fill:#16a34a}.amber{fill:#b45309}.red{fill:#dc2626}
+</style><rect width="1200" height="820" fill="#f4f5f7"/>
+<rect x="24" y="22" width="30" height="30" rx="8" class="blue"/><text x="66" y="45" class="h">技能任务</text><text x="150" y="43" class="sm m">示例界面</text>
+<line x1="24" y1="82" x2="1176" y2="82" stroke="#dfe3e8" stroke-width="2"/>
+<text x="150" y="72" class="s b" fill="#2563eb">技能组</text><rect x="130" y="79" width="90" height="3" rx="2" class="blue"/><text x="395" y="72" class="s " fill="#6b7280">任务</text><text x="640" y="72" class="s " fill="#6b7280">MCP 服务</text><text x="885" y="72" class="s " fill="#6b7280">设置</text>
+
+<rect x="24" y="105" width="140" height="34" rx="6" class="blue"/><text x="54" y="127" class="s" fill="#fff">＋ 新增技能</text>
+<rect x="24" y="155" width="1152" height="210" rx="10" class="card"/>
+<text x="50" y="190" class="b">结构化摘要助手</text><rect x="190" y="171" width="74" height="26" rx="13" fill="#e7f7ec"/><text x="211" y="189" class="sm" fill="#16a34a">已启用</text>
+<text x="50" y="220" class="s m">根据文献内容生成结构化摘要，输出 summary.md。</text>
+<text x="50" y="248" class="sm m">范围：全库　·　材料：元数据 / 摘要 / PDF　·　交付：Markdown 文件</text>
+<rect x="50" y="270" width="1080" height="8" rx="4" fill="#dfe3e8"/><rect x="50" y="270" width="250" height="8" rx="4" class="amber"/><rect x="300" y="270" width="260" height="8" class="blue"/><rect x="560" y="270" width="500" height="8" class="green"/><rect x="1060" y="270" width="70" height="8" rx="4" class="red"/>
+<text x="50" y="310" class="sm m">等待材料 12　 待领取 8　 已领取 2　 已完成 24　 失败 1</text>
+<rect x="24" y="385" width="1152" height="180" rx="10" class="card"/><text x="50" y="420" class="b">元数据质量检查</text><rect x="180" y="401" width="74" height="26" rx="13" fill="#e7f7ec"/><text x="201" y="419" class="sm" fill="#16a34a">已启用</text>
+<text x="50" y="450" class="s m">检查标题、作者、年份与标识符是否完整，结果写回 Zotero 笔记。</text>
+<text x="50" y="480" class="sm m">范围：集合「Reading List」　·　材料：元数据 / 摘要　·　交付：Zotero 笔记</text>
+<rect x="24" y="585" width="1152" height="150" rx="10" class="card"/><text x="50" y="620" class="b">标签自动分类</text><rect x="160" y="601" width="74" height="26" rx="13" fill="#eceff3"/><text x="181" y="619" class="sm m">已停用</text>
+<text x="50" y="650" class="s m">根据标题与摘要生成通用主题标签，用于示例演示。</text></svg>
