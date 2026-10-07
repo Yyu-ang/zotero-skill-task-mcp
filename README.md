@@ -248,3 +248,7 @@ dist/
 
 - `需求计划书.md`
 - `docs/TECH_VALIDATION_MCP_HTTP.md`
+
+## 许可证
+
+本项目采用 MIT 许可证，详见 [LICENSE](LICENSE)。

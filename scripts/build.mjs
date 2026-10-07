@@ -18,6 +18,8 @@ import {
   mkdirSync,
   rmSync,
   cpSync,
+  copyFileSync,
+  existsSync,
 } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -130,6 +132,9 @@ async function main() {
   const stageManifest = JSON.parse(readFileSync(stageManifestPath, 'utf-8'));
   stageManifest.version = pkg.version;
   writeFileSync(stageManifestPath, JSON.stringify(stageManifest, null, 2) + '\n');
+  // MIT 许可随包分发：XPI 是软件的复制件，LICENSE 必须包含在包内
+  const licenseSrc = resolve(ROOT, 'LICENSE');
+  if (existsSync(licenseSrc)) copyFileSync(licenseSrc, resolve(STAGE_DIR, 'LICENSE'));
 
   mkdirSync(DIST_DIR, { recursive: true });
   const xpiPath = resolve(DIST_DIR, XPI_NAME);
