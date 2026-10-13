@@ -7,8 +7,9 @@ This document describes the **current public implementation** of the plugin's MC
 The plugin reuses Zotero's built-in Connector HTTP server through `Zotero.Server.Endpoints`.
 
 - Endpoint: `/skilltask/mcp`
-- Default host: loopback only (`127.0.0.1`)
-- The plugin does **not** open a second TCP listener.
+- The Zotero Connector endpoint remains loopback-only (`127.0.0.1`).
+- The plugin also creates a dedicated LAN listener on TCP `23121` through Gecko `nsIServerSocket`, with `loopbackOnly=false` (all interfaces).
+- Both transports dispatch to the same protocol and task implementation in `McpServer.handleRequest`.
 - Turning MCP off unregisters/disables the plugin endpoint; it does not stop Zotero's own Connector Server.
 
 This keeps the plugin lifecycle simple and avoids maintaining a separate network service.
@@ -19,7 +20,7 @@ Current defaults:
 
 - MCP endpoint: **enabled**
 - Access token requirement: **disabled**
-- Network exposure: **loopback only**
+- Network exposure: **LAN listener on port 23121** (alongside the original loopback endpoint)
 
 Users can disable MCP from the plugin panel. Access-token protection can be enabled separately.
 
@@ -31,7 +32,7 @@ The implementation follows these boundaries:
 - Note HTML is sanitized before Zotero write-back.
 - File deliverables are written only to plugin-controlled locations before optional Zotero attachment import.
 
-Because the endpoint is local-only by design, exposing it through port forwarding, reverse proxies, VPN forwarding, or other network bridges is outside the default threat model and should be reviewed separately.
+The independent listener permits direct LAN access. It uses the same optional bearer-token setting and MCP tool authorization behavior as the local endpoint. This is deliberately a local-network feature; the host operator decides which firewall rules apply.
 
 ## 3. MCP protocol compatibility
 
@@ -111,7 +112,9 @@ The repository manifest currently targets Zotero 9–10. Major Zotero upgrades s
 
 ## 7. Relevant source files
 
-- `src/mcpServer.ts` — protocol handling and MCP tools
+- `src/mcpServer.ts` — protocol handling, local Connector registration, LAN listener lifecycle, and MCP tools
+- `src/lanMcpListener.ts` — independent Gecko TCP socket and byte-framed HTTP transport
+- `scripts/test-lan-mcp.mjs` — mocked Gecko socket regression tests
 - `src/taskStore.ts` — task state, leases, completion/revision
 - `src/taskGenerator.ts` — scanning and material readiness
 - `src/attachments.ts` — attachment lookup/replacement helpers
