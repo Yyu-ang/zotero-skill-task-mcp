@@ -17,8 +17,8 @@ const plugin = new PluginCore();
 
 // Green Frog 模式：插件实例单层挂在 Zotero['zotero-skill-task'] 上
 // （对标 Zotero.greenfrog / Zotero.AIButler），bootstrap.js 直接调用其 hooks；
-// 设置页走 PreferencePanes.register 加载的 preferences.js，经 Zotero.SkillTask
-// 单通道访问业务 API（xhtml 无 onload 回调）。
+// 设置页已并入主面板（tab-settings，由 src/panel.ts 渲染），经 Zotero.SkillTask
+// 单通道访问业务 API；不再使用独立 Preference Pane / preferences.js。
 try {
   // bootstrap.js 经 loadSubScript 的 ctx scope 把真实 Zotero 传进来（ctx.Zotero）
   // 直接用全局 Zotero（如果可用），否则用 scope 传入的
