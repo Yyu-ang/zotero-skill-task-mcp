@@ -38,6 +38,7 @@ import type {
 import { DATA_DIR_NAME } from './types';
 import { resolveEarliestPdfPath } from './taskGenerator';
 import { prefs, getLeaseMs } from './prefs';
+import { LanMcpListener, LAN_MCP_PORT, LAN_MCP_PATH } from './lanMcpListener';
 import { LIMITS, error as logError, log, truncateForDisplay } from './utils';
 import { traced } from './utils/trace';
 import {
@@ -350,6 +351,10 @@ export class McpServer implements IMcpServer {
   private version: string;
   /** 端点是否已注册到 Zotero.Server（注册/注销幂等的依据） */
   private registered = false;
+  /** Separate LAN listener; never modifies Zotero Connector's loopback socket. */
+  private readonly lanListener = new LanMcpListener((data, headers) =>
+    this.handleRequest({ data, headers })
+  );
 
   constructor(deps: {
     skillGroups: ISkillGroupStore;
@@ -394,6 +399,12 @@ export class McpServer implements IMcpServer {
     Z.Server.Endpoints[MCP_PATH] = McpEndpoint;
     this.registered = true;
     log('MCP endpoint registered:', MCP_PATH);
+    try {
+      this.lanListener.start();
+      log(`MCP LAN endpoint listening on 0.0.0.0:${LAN_MCP_PORT}${LAN_MCP_PATH}`);
+    } catch (e) {
+      logError(`MCP LAN listener failed to start on port ${LAN_MCP_PORT}: ${errMsg(e)}`);
+    }
   }
 
   /**
@@ -401,6 +412,7 @@ export class McpServer implements IMcpServer {
    */
   unregister(): void {
     this.registered = false;
+    this.lanListener.stop();
     try {
       const Z = zoteroGlobal();
       if (Z?.Server?.Endpoints) {
@@ -500,6 +512,8 @@ export class McpServer implements IMcpServer {
     port: number | null;
     url: string | null;
     lanAccessible: boolean;
+    lanPort: number | null;
+    lanUrl: string | null;
   } {
     const port = detectServerPort();
     return {
@@ -508,8 +522,12 @@ export class McpServer implements IMcpServer {
       path: MCP_PATH,
       port,
       url: port ? `http://${MCP_HOST}:${port}${MCP_PATH}` : null,
-      // Zotero Connector Server 是 loopback 服务，并校验 Host 为 localhost/127.0.0.1/::1。
-      lanAccessible: false,
+      // Independent nsIServerSocket listens on all interfaces, not Connector.
+      lanAccessible: this.lanListener.isRunning(),
+      lanPort: this.lanListener.isRunning() ? LAN_MCP_PORT : null,
+      lanUrl: this.lanListener.isRunning()
+        ? `http://<LAN-IP>:${LAN_MCP_PORT}${LAN_MCP_PATH}`
+        : null,
     };
   }
 
