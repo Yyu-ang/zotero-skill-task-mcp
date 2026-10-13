@@ -1,0 +1,26 @@
+name: Validate Zotero Skill Task MCP
+
+on:
+  pull_request:
+  push:
+    branches:
+      - feature/mcp-lan-listener-23121
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Upload XPI test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: zotero-skill-task-lan-xpi
+          path: dist/*.xpi
