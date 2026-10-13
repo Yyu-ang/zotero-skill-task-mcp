@@ -20,7 +20,7 @@ export type McpHandler = (
 ) => Promise<McpResponse>;
 
 const MAX_HEADER_BYTES = 16 * 1024;
-const MAX_BODY_BYTES = 256 * 1024 * 1024; // 200 MB default deliverable + JSON/base64 overhead
+const MAX_BODY_BYTES = 512 * 1024 * 1024; // Allow base64 expansion of 200MB+ deliverables
 const IDLE_POLLS = 1500; // 15 seconds, reset after each incoming chunk
 const HTTP_REASON: Record<number, string> = {
   200: 'OK',
