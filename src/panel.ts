@@ -2920,6 +2920,7 @@ function renderMcp(): void {
   let port: number | null = null;
   let url: string | null = null;
   let lanAccessible = false;
+  let lanUrl: string | null = null;
   let tokenEnabled = false;
   let token = '';
   try {
@@ -2929,6 +2930,7 @@ function renderMcp(): void {
     port = st.port;
     url = st.url;
     lanAccessible = st.lanAccessible;
+    lanUrl = st.lanUrl;
     tokenEnabled = !!mcp.isTokenEnabled?.();
     token = tokenEnabled ? mcp.ensureToken() : '';
   } catch (e) {
@@ -2990,6 +2992,19 @@ function renderMcp(): void {
   }
   card.append(urlRow);
 
+  if (lanAccessible && lanUrl) {
+    const lanRow = el('div', 'mcp-row');
+    lanRow.append(el('span', 'k', 'LAN MCP'));
+    const lanBox = el('div', 'url-box', lanUrl);
+    lanBox.title = 'Replace <LAN-IP> with this computer\'s LAN address';
+    lanRow.append(lanBox);
+    lanRow.append(
+      opBtn(getString('panel-action-copy'), (b) => copyText(lanUrl!, b),
+        { icon: 'copy', title: 'Copy LAN MCP endpoint template' })
+    );
+    card.append(lanRow);
+    card.append(el('div', 'hint', 'LAN listener: 0.0.0.0. Replace <LAN-IP> with your Zotero host LAN address.'));
+  }
   if (!lanAccessible) {
     const localOnly = el('div', 'notice');
     localOnly.append(iconEl('alert-circle', 'ic'));

@@ -10,13 +10,13 @@
     "build": "node scripts/build.mjs",
     "release": "node scripts/release.mjs",
     "typecheck": "node scripts/gen-locale.mjs && tsc --noEmit",
-    "test": "node scripts/test-deliverables.mjs && node scripts/test-ui-wiring.mjs",
+    "test": "node scripts/test-deliverables.mjs && node scripts/test-ui-wiring.mjs && node scripts/test-lan-mcp.mjs",
     "dev": "node scripts/serve.mjs",
     "start": "node scripts/serve.mjs",
     "build:dev": "node scripts/build.mjs --dev",
     "release:publish": "node scripts/release.mjs --publish"
   },
   "type": "module",
-  "version": "0.5.8",
+  "version": "0.5.9",
   "license": "MIT"
 }
