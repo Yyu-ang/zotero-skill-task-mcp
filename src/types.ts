@@ -393,8 +393,12 @@ export interface IMcpServer {
     port: number | null;
     /** 完整 MCP endpoint；端口未知时为 null */
     url: string | null;
-    /** 当前实现是否可直接通过局域网访问 */
+    /** 当前是否有独立的局域网 MCP 监听 */
     lanAccessible: boolean;
+    /** 独立局域网监听端口；未启动时为 null */
+    lanPort: number | null;
+    /** 可复制的端点模板，将 <LAN-IP> 替换为本机 IP */
+    lanUrl: string | null;
   };
 }
 
