@@ -68,6 +68,7 @@ async function startup({ id, version, rootURI }, reason) {
   try { ctx.Ci = Ci; } catch {}
   try { ctx.DOMParser = DOMParser; } catch {}
   try { ctx.TextEncoder = TextEncoder; } catch {}
+  try { ctx.TextDecoder = TextDecoder; } catch {}
   try { ctx.URL = URL; } catch {}
   try { ctx.atob = atob; } catch {}
   try { ctx.btoa = btoa; } catch {}
