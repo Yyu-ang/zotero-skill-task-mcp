@@ -1,17 +1,19 @@
 /**
  * src/panel.ts — 技能任务管理面板前端脚本（模块 E）
  *
- * 由 addon/content/panel.xhtml 通过 <script src="panel.js"> 引入，
+ * 由 addon/content/panel.html 通过 <script src="panel.js"> 引入，
  * 经 scripts/build.mjs 打包为 addon/content/panel.js（iife）。
  *
  * 运行时通过 (Zotero as any).SkillTask 拿到协调员在 core.ts 挂载的
- * SkillTaskAPI；若挂载缺失则显示降级提示，不抛异常。
+ * SkillTaskAPI；若挂载缺失则显示降级提示，不抛异常。设置选项卡
+ * （tab-settings）的偏好设置读写不经过 SkillTaskAPI，而是经 prefs.ts
+ *（Zotero.Prefs 直读写，框架对照结论第 7 条）；面板不调用 hooks。
  *
- * 三个选项卡：技能组（CRUD）/ 任务（按技能组分组的各状态明细）/ MCP 服务（开关+状态+token）。
+ * 四个选项卡：技能组（CRUD）/ 任务（按技能组分组的各状态明细）/ MCP 服务（开关+状态+token）/ 设置（偏好设置读写）。
  * 所有异步操作均 try/catch 并在面板顶部显示本地化错误提示（getString）。
- * 静态 xhtml 文案在 init() 经 applyStaticI18n() 本地化。
+ * 静态 HTML 文案在 init() 经 applyStaticI18n() 本地化。
  *
- * 视觉体系（与 panel.xhtml 设计令牌配套）：
+ * 视觉体系（与 panel.html 设计令牌配套）：
  * - 图标：单一 feather 风格 inline SVG（1.5px 描边，currentColor），
  *   按钮一律图标+文字，不做纯图标谜语按钮；禁用 emoji。
  * - 状态徽章颜色+图标双通道：ok=绿 warn=琥珀 danger=红 muted=灰，
@@ -452,7 +454,7 @@ function setStaticText(id: string, text: string): void {
 }
 
 /**
- * panel.xhtml 里硬编码的静态文案（title/按钮/选项卡/降级提示）同样走 getString()，
+ * panel.html 里硬编码的静态文案（title/按钮/选项卡/降级提示）同样走 getString()，
  * 保证 Zotero 界面语言为英文时面板无中文残留（需求单 需求1 验收）。
  * 在 init() 最开头调用；任一元素缺失不抛错（防御性）。
  */
@@ -514,7 +516,7 @@ function init(): void {
 
   // 需求单 需求1：JS 侧 Fluent 国际化（文案唯一来源为 ftl，构建时提取）
   initLocale();
-  // panel.xhtml 里的静态文案（title/按钮/选项卡/降级提示）同样走 getString
+  // panel.html 里的静态文案（title/按钮/选项卡/降级提示）同样走 getString
   applyStaticI18n();
 
   // 静态按钮绑定

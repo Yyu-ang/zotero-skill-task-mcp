@@ -43,9 +43,11 @@ async function startup({ id, version, rootURI }, reason) {
    * loadSubScript 的第二个参数会成为被加载脚本的作用域，
    * 脚本内所有顶层变量都会挂到这个对象上。
    * 插件实例单层挂在 Zotero['zotero-skill-task'] 上（{ plugin, hooks }），
-   * bootstrap.js 直接调用其 hooks；设置页已并入主面板（tab-settings，由
-   * src/panel.ts 渲染），经 Zotero.SkillTask 单通道访问业务 API；
-   * 不再使用独立 Preference Pane / preferences.xhtml。
+   * bootstrap.js 直接调用其 hooks；面板不调用 hooks。
+   * 设置页已并入主面板（tab-settings，由 src/panel.ts 渲染）：业务操作
+   * 经 Zotero.SkillTask 访问；偏好设置读写经 Zotero.Prefs 直读写
+   * （框架对照结论第 7 条），不再使用独立 Preference Pane /
+   * preferences.xhtml。
    *
    * 注意：scope 里没有真实的 Zotero 全局（globalThis 是 ctx 自身），
    * 所以把 bootstrap 作用域的 Zotero/Services 等显式传进去。
