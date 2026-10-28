@@ -68,11 +68,26 @@ export function renderActivityDashboard(
   const heatOuter = node('div', 'activity-scroll');
   heatOuter.classList.toggle('activity-completed', mode === 'completed');
   const monthLabels = node('div', 'activity-month-labels');
-  for (const month of stats.monthly) monthLabels.append(node('span', '', month.key.slice(5)));
-  heatOuter.append(monthLabels);
   const heatmap = node('div', 'activity-heatmap');
   const first = stats.daily[0];
   const weekday = first ? new Date(first.key + 'T12:00:00').getDay() : 0;
+  const weekCount = Math.ceil((weekday + stats.daily.length) / 7);
+  // The heatmap uses 10px cells + 3px gaps. Month labels must be positioned
+  // by their actual Sunday-aligned week column, not 12 equal-width months.
+  monthLabels.style.width = Math.max(0, weekCount * 13 - 3) + 'px';
+  const displayed = new Set<number>();
+  for (let i = 0; i < stats.daily.length; i++) {
+    const day = stats.daily[i];
+    if (i > 0 && !day.key.endsWith('-01')) continue;
+    const weekColumn = Math.floor((weekday + i) / 7);
+    if (displayed.has(weekColumn)) continue;
+    displayed.add(weekColumn);
+    const label = node('span', '', day.key.slice(5, 7));
+    label.style.left = (weekColumn * 13) + 'px';
+    label.title = day.key.slice(0, 7);
+    monthLabels.append(label);
+  }
+  heatOuter.append(monthLabels);
   for (let i = 0; i < weekday; i++) {
     const blank = node('span', 'activity-day activity-blank');
     blank.setAttribute('aria-hidden', 'true');
