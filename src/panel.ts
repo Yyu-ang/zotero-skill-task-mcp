@@ -2035,7 +2035,7 @@ function pagedStatusSection(
       { after: cursor, limit: TASK_PAGE_SIZE, itemKeyContains: taskSearch }
     );
     const existing = new Set(
-      Array.from(rows.querySelectorAll<HTMLElement>('.task-item')).map(row => row.dataset.taskId)
+      Array.from(rows.querySelectorAll('.task-item')).map(row => (row as HTMLElement | null)?.dataset.taskId)
     );
     for (const task of next.items) {
       if (!existing.has(task.id)) {
@@ -2276,9 +2276,10 @@ function toggleTaskDetail(id: string): void {
   else expandedTasks.add(id);
   // Update just the visible row; rebuilding every status here would cause
   // unnecessary queries and DOM churn on every detail expand/collapse.
-  const items = document.querySelectorAll<HTMLElement>('#task-list .task-item');
-  for (const item of items) {
-    if (item.dataset.taskId !== id) continue;
+  const items = document.querySelectorAll('#task-list .task-item');
+  for (const candidate of items) {
+    const item = candidate as HTMLElement | null;
+    if (!item || item.dataset.taskId !== id) continue;
     item.classList.toggle('expanded', !isExpanded);
     const button = item.querySelector<HTMLButtonElement>('.exp-btn');
     if (button) {
