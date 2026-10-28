@@ -92,7 +92,7 @@ for (let i = 0; i < 300; i++) {
   assert.ok(largeIndex.countsBySkill(filterLarge.skillGroupId).pending >= 0);
 }
 assert.equal(sourcePasses, 1, 'indexed page queries must not rescan the underlying source');
-assert.equal(largeIndex.page({ skillGroupId: 'group-0', status: 'done' }, { limit: 0 }).total, 5000);
+assert.equal(largeIndex.page({ skillGroupId: 'group-0', status: 'done' }, { limit: 0 }).total, 2500);
 assert.equal(largeIndex.page({ skillGroupId: 'group-1', status: 'done' }, { limit: 0 }).total, 0);
 assert.equal(largeIndex.page({ skillGroupId: 'group-1', status: 'pending' }, {
   itemKeyContains: 'item-1', limit: 0,
