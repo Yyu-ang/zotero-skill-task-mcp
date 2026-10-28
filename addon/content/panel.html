@@ -291,9 +291,10 @@
     .activity-section-title { font-size: 13px; margin: 18px 0 9px; font-weight: 600; }
     .activity-scroll { overflow-x: auto; padding-bottom: 6px; }
     .activity-month-labels {
-      display: grid; grid-template-columns: repeat(12, minmax(0, 1fr));
-      width: 720px; font-size: 11px; color: var(--muted); margin-bottom: 6px;
+      position: relative; height: 17px; width: max-content;
+      font-size: 11px; color: var(--muted); margin-bottom: 6px;
     }
+    .activity-month-labels span { position: absolute; top: 0; white-space: nowrap; }
     .activity-heatmap {
       display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 10px);
       grid-auto-columns: 10px; gap: 3px; width: max-content;
@@ -309,7 +310,7 @@
     .activity-completed .activity-level-3,
     .activity-completed .activity-level-4 { background: var(--ok); }
     .activity-blank { visibility: hidden; }
-    .activity-legend { display: flex; align-items: center; justify-content: flex-end; gap: 4px; margin-top: 8px; font-size: 11px; color: var(--muted); min-width: 720px; }
+    .activity-legend { display: flex; align-items: center; justify-content: flex-end; gap: 4px; margin-top: 8px; font-size: 11px; color: var(--muted); min-width: max-content; }
     .activity-legend span:first-child { margin-right: 4px; }
     .activity-legend span:last-child { margin-left: 4px; }
     .activity-month-chart { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 8px; }
