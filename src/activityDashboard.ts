@@ -46,17 +46,17 @@ export function renderActivityDashboard(
   const done = stats.statusCounts.done ?? 0;
   const backlog = Math.max(0, stats.total - done - (stats.statusCounts.cancelled ?? 0));
   const metrics: Array<[string, string]> = [
-    ['panel-activity-today-added', String(today?.added ?? 0)],
-    ['panel-activity-today-completed', String(today?.completed ?? 0)],
-    ['panel-activity-30-added', String(last30.added)],
-    ['panel-activity-30-completed', String(last30.completed)],
-    ['panel-activity-backlog', String(backlog)],
-    ['panel-activity-done-rate', stats.total ? (100 * done / stats.total).toFixed(1) + '%' : '0%'],
+    [getString('panel-activity-today-added'), String(today?.added ?? 0)],
+    [getString('panel-activity-today-completed'), String(today?.completed ?? 0)],
+    [getString('panel-activity-30-added'), String(last30.added)],
+    [getString('panel-activity-30-completed'), String(last30.completed)],
+    [getString('panel-activity-backlog'), String(backlog)],
+    [getString('panel-activity-done-rate'), stats.total ? (100 * done / stats.total).toFixed(1) + '%' : '0%'],
   ];
   const metricsWrap = node('div', 'activity-metrics');
   for (const [label, value] of metrics) {
     const metric = node('div', 'activity-metric');
-    metric.append(node('span', 'muted', getString(label)), node('strong', '', value));
+    metric.append(node('span', 'muted', label), node('strong', '', value));
     metricsWrap.append(metric);
   }
   card.append(metricsWrap);
@@ -133,10 +133,10 @@ export function renderActivityDashboard(
     const scroll = node('div', 'activity-table-wrap');
     const table = node('table', 'activity-table');
     const header = node('tr');
-    for (const key of [
-      'panel-activity-pivot-skill', 'panel-activity-total', 'panel-activity-done',
-      'panel-activity-pivot-added', 'panel-activity-pivot-completed',
-    ]) header.append(node('th', '', getString(key)));
+    for (const label of [
+      getString('panel-activity-pivot-skill'), getString('panel-activity-total'), getString('panel-activity-done'),
+      getString('panel-activity-pivot-added'), getString('panel-activity-pivot-completed'),
+    ]) header.append(node('th', '', label));
     const thead = node('thead');
     thead.append(header);
     table.append(thead);
