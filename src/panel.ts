@@ -2033,7 +2033,7 @@ function pagedStatusSection(
 
   const updateMoreLabel = (button: HTMLButtonElement, shown: number, total: number): void => {
     const label = getString('panel-task-more', { shown, total });
-    const textNode = Array.from(button.childNodes).find(n => n.nodeType === Node.TEXT_NODE);
+    const textNode = Array.from(button.childNodes).find(n => n?.nodeType === Node.TEXT_NODE);
     if (textNode) textNode.textContent = label;
     else button.append(document.createTextNode(label));
   };
