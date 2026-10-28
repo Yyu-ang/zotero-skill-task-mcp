@@ -20,12 +20,16 @@ import {
   type TaskCompleteResult,
   type TaskCreateData,
   type TaskFilter,
+  type TaskPage,
+  type TaskPageOptions,
+  type TaskActivity,
   type TaskStatus,
   uid,
 } from './types';
 import { LIMITS, error, log, truncateForDisplay } from './utils';
 import { traced } from './utils/trace';
 import { getLeaseMs } from './prefs';
+import { paginateTasks, summarizeTaskActivity } from './taskInsights';
 
 /** 任务文件的文件名（位于 Zotero 数据目录下 DATA_DIR_NAME 目录内） */
 const TASKS_FILE_NAME = 'tasks.json';
@@ -140,6 +144,16 @@ export class TaskStore implements ITaskStore {
       result = result.filter((t) => wanted.includes(t.status));
     }
     return result.map((t) => ({ ...t }));
+  }
+
+  /** 只返回本次请求的任务页；completedAt 倒序排列已完成任务。 */
+  listPage(filter?: TaskFilter, options?: TaskPageOptions): TaskPage {
+    return paginateTasks(this.tasks.values(), filter, options);
+  }
+
+  /** 在存储内部一次聚合活动数据，避免向界面传输全部任务。 */
+  activityStats(now?: number): TaskActivity {
+    return summarizeTaskActivity(this.tasks.values(), now);
   }
 
   /** 按 id 取任务；不存在返回 undefined。 */
