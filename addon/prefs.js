@@ -9,6 +9,9 @@ pref("extensions.zotero-skill-task.mcp.enabled", true);
 // MCP 访问凭据默认关闭；用户需要鉴权时可显式启用。
 pref("extensions.zotero-skill-task.mcp.tokenEnabled", false);
 
+// 面板快捷键默认关闭；用户可在插件设置中显式启用。
+pref("extensions.zotero-skill-task.shortcut.enabled", false);
+
 // 任务领取租约时长（分钟），默认 30；插件主面板可改，实时生效
 pref("extensions.zotero-skill-task.task.leaseMinutes", 30);
 

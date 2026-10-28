@@ -20,12 +20,16 @@ import {
   type TaskCompleteResult,
   type TaskCreateData,
   type TaskFilter,
+  type TaskPage,
+  type TaskPageOptions,
+  type TaskActivity,
   type TaskStatus,
   uid,
 } from './types';
 import { LIMITS, error, log, truncateForDisplay } from './utils';
 import { traced } from './utils/trace';
 import { getLeaseMs } from './prefs';
+import { TaskQueryIndex, summarizeTaskActivity } from './taskInsights';
 
 /** 任务文件的文件名（位于 Zotero 数据目录下 DATA_DIR_NAME 目录内） */
 const TASKS_FILE_NAME = 'tasks.json';
@@ -48,6 +52,8 @@ const ALL_STATUSES: TaskStatus[] = [
 export class TaskStore implements ITaskStore {
   /** 内部任务表：id → 任务。Map 保持插入顺序（即创建时间顺序），便于取“最早”任务。 */
   private tasks: Map<string, Task> = new Map();
+  /** Lazily rebuilt after each state mutation, shared by all UI status queries. */
+  private taskIndex: TaskQueryIndex | null = null;
 
   /** tasks.json 的绝对路径 */
   private readonly filePath: string;
@@ -107,6 +113,8 @@ export class TaskStore implements ITaskStore {
 
   /** 写穿落盘：全量任务表序列化为 JSON 并原子写入（经队列串行）。 */
   private async persist(): Promise<void> {
+    // Changes occur before persist(); invalidate immediately, not after IO.
+    this.taskIndex = null;
     const run = this.persistQueue.then(() => this.writeSnapshot());
     // 保持队列不断：本次失败不影响后续落盘；调用方仍能拿到本次的错误
     this.persistQueue = run.then(
@@ -140,6 +148,21 @@ export class TaskStore implements ITaskStore {
       result = result.filter((t) => wanted.includes(t.status));
     }
     return result.map((t) => ({ ...t }));
+  }
+
+  private getTaskIndex(): TaskQueryIndex {
+    if (!this.taskIndex) this.taskIndex = new TaskQueryIndex(this.tasks.values());
+    return this.taskIndex;
+  }
+
+  /** Cached query index: full scan/sort at most once between mutations. */
+  listPage(filter?: TaskFilter, options?: TaskPageOptions): TaskPage {
+    return this.getTaskIndex().page(filter, options);
+  }
+
+  /** 在存储内部一次聚合活动数据，避免向界面传输全部任务。 */
+  activityStats(now?: number): TaskActivity {
+    return summarizeTaskActivity(this.tasks.values(), now);
   }
 
   /** 按 id 取任务；不存在返回 undefined。 */
@@ -576,16 +599,7 @@ export class TaskStore implements ITaskStore {
    * 供界面计数（与明细一致：counts 直接按同一任务表统计）。
    */
   countsBySkill(skillGroupId: string): Record<TaskStatus, number> {
-    const counts = {} as Record<TaskStatus, number>;
-    for (const status of ALL_STATUSES) {
-      counts[status] = 0;
-    }
-    for (const task of this.tasks.values()) {
-      if (task.skillGroupId === skillGroupId && counts[task.status] !== undefined) {
-        counts[task.status] += 1;
-      }
-    }
-    return counts;
+    return this.getTaskIndex().countsBySkill(skillGroupId);
   }
 }
 

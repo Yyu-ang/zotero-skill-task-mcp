@@ -197,6 +197,51 @@ export interface TaskFilter {
   status?: TaskStatus | TaskStatus[];
 }
 
+/** The panel requests only one bounded page of task records at a time. */
+/** Stable sort tuple used for keyset pagination across background task changes. */
+export interface TaskCursor {
+  sortAt: number;
+  createdAt: number;
+  id: string;
+}
+export interface TaskPageOptions {
+  /** Legacy offset for one-shot callers; the panel uses after instead. */
+  offset?: number;
+  limit?: number;
+  itemKeyContains?: string;
+  after?: TaskCursor;
+}
+
+export interface TaskPage {
+  items: Task[];
+  total: number;
+  nextCursor: TaskCursor | null;
+}
+
+export interface TaskActivityBucket {
+  /** Local calendar date (YYYY-MM-DD) or local month (YYYY-MM). */
+  key: string;
+  added: number;
+  completed: number;
+}
+
+export interface TaskActivityBySkill {
+  skillGroupId: string;
+  total: number;
+  done: number;
+  added30: number;
+  completed30: number;
+}
+
+/** Last 365 local days, last 12 local months and current skill-group breakdown. */
+export interface TaskActivity {
+  daily: TaskActivityBucket[];
+  monthly: TaskActivityBucket[];
+  total: number;
+  statusCounts: Record<TaskStatus, number>;
+  bySkill: TaskActivityBySkill[];
+}
+
 /** 领取时返回给 AI 的输入材料包（只含技能配置允许的材料） */
 export interface MaterialPackage {
   itemKey: string;
@@ -318,6 +363,8 @@ export interface ISkillGroupStore {
 /** 任务存储（模块 B 实现 src/taskStore.ts，`implements ITaskStore`） */
 export interface ITaskStore {
   list(filter?: TaskFilter): Task[];
+  listPage(filter?: TaskFilter, options?: TaskPageOptions): TaskPage;
+  activityStats(now?: number): TaskActivity;
   get(id: string): Task | undefined;
   /** 幂等键：同一技能组 × 同一条目 的有效任务（非 cancelled/done 视为有效） */
   findActiveBySkillAndItem(

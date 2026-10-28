@@ -15,7 +15,7 @@ export const PREFS = {
   TASK_LEASE_MINUTES: 'extensions.zotero-skill-task.task.leaseMinutes',
   /** 文件交付物大小上限（MB），默认 200；修改实时生效 */
   DELIVERABLE_MAX_FILE_MB: 'extensions.zotero-skill-task.deliverable.maxFileMB',
-  /** 面板快捷键总开关，默认 true；修改实时生效（需求单 需求6） */
+  /** 面板快捷键总开关，默认 false；修改实时生效（需求单 需求6） */
   SHORTCUT_ENABLED: 'extensions.zotero-skill-task.shortcut.enabled',
   /** 面板快捷键字母（macOS），默认 'J'；修改实时生效 */
   SHORTCUT_KEY_MAC: 'extensions.zotero-skill-task.shortcut.keyMac',
@@ -126,9 +126,9 @@ export function isMacPlatform(): boolean {
   return false;
 }
 
-/** 面板快捷键是否启用（默认 true；设置页修改后实时生效） */
+/** 面板快捷键是否启用（默认 false；设置页修改后实时生效） */
 export function isShortcutEnabled(): boolean {
-  const v = prefs.get(PREFS.SHORTCUT_ENABLED, true);
+  const v = prefs.get(PREFS.SHORTCUT_ENABLED, false);
   // Zotero.Prefs 可能返回字符串 "false"，做一次规范化
   if (typeof v === 'string') return v.toLowerCase() !== 'false';
   return !!v;

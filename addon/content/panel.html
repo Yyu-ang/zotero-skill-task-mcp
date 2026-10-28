@@ -272,6 +272,69 @@
     .prog-fill { height: 100%; width: 0; border-radius: 999px; background: var(--accent); transition: width 250ms var(--ease); }
     .scan-prog .prog-text { white-space: nowrap; }
 
+    /* ── Bounded task pages and activity dashboard ── */
+    .task-more { margin: 8px 12px 10px; }
+    .activity-card { margin-bottom: 18px; }
+    .activity-heading { justify-content: space-between; }
+    .activity-modes { margin-left: auto; display: flex; gap: 6px; }
+    .activity-subtitle { color: var(--muted); font-size: 12px; margin: 5px 0 12px; }
+    .activity-metrics {
+      display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px; margin: 12px 0 18px;
+    }
+    .activity-metric {
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 8px 12px; background: var(--bg);
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    .activity-metric strong { font-size: 20px; font-variant-numeric: tabular-nums; }
+    .activity-section-title { font-size: 13px; margin: 18px 0 9px; font-weight: 600; }
+    .activity-scroll { overflow-x: auto; padding-bottom: 6px; }
+    .activity-month-labels {
+      position: relative; height: 17px; width: max-content;
+      font-size: 11px; color: var(--muted); margin-bottom: 6px;
+    }
+    .activity-month-labels span { position: absolute; top: 0; white-space: nowrap; }
+    .activity-heatmap {
+      display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 10px);
+      grid-auto-columns: 10px; gap: 3px; width: max-content;
+    }
+    .activity-day { width: 10px; height: 10px; flex: none; border-radius: 2px; display: block; }
+    .activity-level-0 { background: var(--border); }
+    .activity-level-1 { background: var(--accent); opacity: 0.25; }
+    .activity-level-2 { background: var(--accent); opacity: 0.50; }
+    .activity-level-3 { background: var(--accent); opacity: 0.75; }
+    .activity-level-4 { background: var(--accent); }
+    .activity-completed .activity-level-1,
+    .activity-completed .activity-level-2,
+    .activity-completed .activity-level-3,
+    .activity-completed .activity-level-4 { background: var(--ok); }
+    .activity-blank { visibility: hidden; }
+    .activity-legend { display: flex; align-items: center; justify-content: flex-end; gap: 4px; margin-top: 8px; font-size: 11px; color: var(--muted); min-width: max-content; }
+    .activity-legend span:first-child { margin-right: 4px; }
+    .activity-legend span:last-child { margin-left: 4px; }
+    .activity-month-chart { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 8px; }
+    .activity-month { min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+    .activity-month-pair { height: 82px; display: flex; justify-content: center; align-items: flex-end; gap: 3px; width: 100%; border-bottom: 1px solid var(--border); }
+    .activity-bar { width: min(14px, 38%); min-width: 3px; border-radius: 3px 3px 0 0; }
+    .activity-bar.added, .activity-legend-dot.added { background: var(--accent); }
+    .activity-bar.completed, .activity-legend-dot.completed { background: var(--ok); }
+    .activity-month-label { font-size: 11px; color: var(--muted); white-space: nowrap; }
+    .activity-chart-legend { display: flex; justify-content: flex-end; gap: 14px; margin-top: 8px; font-size: 11px; }
+    .activity-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+    .activity-legend-dot { display: inline-block; width: 9px; height: 9px; border-radius: 2px; }
+    .activity-table-wrap { overflow-x: auto; }
+    .activity-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .activity-table th { text-align: left; font-weight: 600; color: var(--muted); white-space: nowrap; }
+    .activity-table th, .activity-table td { padding: 7px 9px; border-bottom: 1px solid var(--border); }
+    .activity-table td:not(:first-child) { font-variant-numeric: tabular-nums; text-align: right; }
+    .activity-table th:not(:first-child) { text-align: right; }
+    .activity-table tr:hover td { background: var(--accent-soft); }
+    @media (max-width: 680px) {
+      .activity-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .activity-month-chart { overflow-x: auto; }
+    }
+
     /* ── MCP ── */
     .mcp-row { display: flex; align-items: center; gap: 10px; margin: 10px 0; font-size: 14px; }
     .mcp-row .k { min-width: 88px; color: var(--muted); font-size: 13px; flex: none; }
