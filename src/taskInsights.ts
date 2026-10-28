@@ -42,7 +42,7 @@ export function paginateTasks(
   const offset = Number.isSafeInteger(options.offset) && (options.offset ?? 0) > 0
     ? options.offset! : 0;
   const limit = Number.isSafeInteger(options.limit) && (options.limit ?? 20) >= 0
-    ? Math.min(options.limit!, 200) : 20;
+    ? options.limit! : 20;
   const query = (options.itemKeyContains ?? '').trim().toLowerCase();
   const statuses = filter.status === undefined
     ? undefined
@@ -104,8 +104,7 @@ export function summarizeTaskActivity(
     monthMap.set(key, bucket);
   }
 
-  const statusCounts = Object.fromEntries(STATUSES.map(s => [s, 0]))
-    as Record<TaskStatus, number>;
+  const statusCounts = Object.fromEntries(STATUSES.map(s => [s, 0])) as Record<TaskStatus, number>;
   const bySkill = new Map<string, TaskActivityBySkill>();
   let total = 0;
   for (const task of source) {
