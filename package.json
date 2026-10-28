@@ -17,6 +17,6 @@
     "release:publish": "node scripts/release.mjs --publish"
   },
   "type": "module",
-  "version": "0.5.9",
+  "version": "0.6.0",
   "license": "MIT"
 }
