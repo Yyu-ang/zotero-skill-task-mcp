@@ -6,7 +6,7 @@ import { transformSync } from 'esbuild';
 
 const source = readFileSync(resolve('src/taskInsights.ts'), 'utf8');
 const js = transformSync(source, { loader: 'ts', format: 'esm', target: 'es2022' }).code;
-const { paginateTasks, summarizeTaskActivity } = await import(
+const { paginateTasks, summarizeTaskActivity, TaskQueryIndex } = await import(
   'data:text/javascript;base64,' + Buffer.from(js).toString('base64')
 );
 const at = (year, month, day, hour = 12) => new Date(year, month - 1, day, hour).getTime();
@@ -38,6 +38,68 @@ assert.equal(paginateTasks(all, filter, { offset: 0, limit: 0 }).total, 55);
 assert.equal(paginateTasks(all, { status: 'pending' }, { itemKeyContains: 'other' }).total, 2);
 assert.equal(paginateTasks(all, { skillGroupId: 'alpha', status: 'pending' }).total, 1);
 assert.equal(paginateTasks(all, filter, { limit: 10000 }).items.length, 55);
+
+
+// A new completion is inserted in front while page one is on screen.
+// Keyset pagination must not repeat the last visible task or skip the next.
+const oldIndex = new TaskQueryIndex(all);
+const oldFirst = oldIndex.page(filter);
+const newlyCompleted = {
+  id: 'newest', skillGroupId: 'alpha', itemKey: 'NEW',
+  status: 'done', createdAt: now, completedAt: now,
+};
+const changedIndex = new TaskQueryIndex([newlyCompleted, ...all]);
+const afterInsert = changedIndex.page(filter, {
+  after: oldFirst.nextCursor, limit: 20,
+});
+assert.deepEqual(afterInsert.items.map(t => t.id),
+  Array.from({ length: 20 }, (_, i) => 'd' + (34 - i)),
+  'newly completed task must not move the cursor window');
+
+// Same-millisecond events must have deterministic id tie breaks.
+const tieTasks = ['a', 'b', 'c'].map(id => ({
+  id, skillGroupId: 'alpha', itemKey: id, status: 'done',
+  createdAt: now, completedAt: now,
+}));
+const tied = new TaskQueryIndex(tieTasks);
+const tieFirst = tied.page(filter, { limit: 1 });
+assert.equal(tieFirst.items[0].id, 'a');
+assert.equal(tied.page(filter, { after: tieFirst.nextCursor, limit: 1 }).items[0].id, 'b');
+assert.equal(tied.page(filter, { after: { sortAt: now, createdAt: now, id: 'b' }, limit: 1 }).items[0].id, 'c');
+
+// Large-data smoke test: build index with exactly one source pass and reuse it
+// across status counts, full-text searches, and hundreds of independent pages.
+let sourcePasses = 0;
+const largeItems = Array.from({ length: 50000 }, (_, i) => ({
+  id: 'large-' + String(i).padStart(5, '0'),
+  skillGroupId: 'group-' + (i % 10), itemKey: 'ITEM-' + i,
+  status: i % 4 === 0 ? 'done' : 'pending',
+  createdAt: now - i * 1000,
+  completedAt: i % 4 === 0 ? now - i * 500 : null,
+}));
+const countingSource = {
+  *[Symbol.iterator]() {
+    sourcePasses++;
+    yield* largeItems;
+  },
+};
+const largeIndex = new TaskQueryIndex(countingSource);
+assert.equal(sourcePasses, 1);
+for (let i = 0; i < 300; i++) {
+  const filterLarge = { skillGroupId: 'group-' + (i % 10), status: i % 4 === 0 ? 'done' : 'pending' };
+  const page = largeIndex.page(filterLarge, { limit: 20 });
+  assert.ok(page.items.length <= 20);
+  assert.ok(largeIndex.countsBySkill(filterLarge.skillGroupId).pending >= 0);
+}
+assert.equal(sourcePasses, 1, 'indexed page queries must not rescan the underlying source');
+assert.equal(largeIndex.page({ skillGroupId: 'group-0', status: 'done' }, { limit: 0 }).total, 5000);
+assert.equal(largeIndex.page({ skillGroupId: 'group-1', status: 'done' }, { limit: 0 }).total, 0);
+assert.equal(largeIndex.page({ skillGroupId: 'group-1', status: 'pending' }, {
+  itemKeyContains: 'item-1', limit: 0,
+}).items.length, 0);
+assert.ok(largeIndex.page({ skillGroupId: 'group-1', status: 'pending' }, {
+  itemKeyContains: 'item-1', limit: 0,
+}).total > 0);
 
 const tasks = [
   { id: 'a', skillGroupId: 'alpha', status: 'done', itemKey: 'A',
