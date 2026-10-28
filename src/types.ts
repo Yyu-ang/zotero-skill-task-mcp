@@ -198,15 +198,24 @@ export interface TaskFilter {
 }
 
 /** The panel requests only one bounded page of task records at a time. */
+/** Stable sort tuple used for keyset pagination across background task changes. */
+export interface TaskCursor {
+  sortAt: number;
+  createdAt: number;
+  id: string;
+}
 export interface TaskPageOptions {
+  /** Legacy offset for one-shot callers; the panel uses after instead. */
   offset?: number;
   limit?: number;
   itemKeyContains?: string;
+  after?: TaskCursor;
 }
 
 export interface TaskPage {
   items: Task[];
   total: number;
+  nextCursor: TaskCursor | null;
 }
 
 export interface TaskActivityBucket {
