@@ -93,8 +93,7 @@ export class TaskQueryIndex {
 
   countsBySkill(skillGroupId: string): Record<TaskStatus, number> {
     const counts = this.counts.get(skillGroupId);
-    return Object.fromEntries(STATUSES.map(s => [s, counts?.[s] ?? 0]))
-      as Record<TaskStatus, number>;
+    return Object.fromEntries(STATUSES.map(s => [s, counts?.[s] ?? 0])) as Record<TaskStatus, number>;
   }
 
   page(filter: TaskFilter = {}, options: TaskPageOptions = {}): TaskPage {
