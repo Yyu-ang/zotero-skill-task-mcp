@@ -31,6 +31,7 @@ import type {
   SkillScope,
   SkillTaskAPI,
   Task,
+  TaskCursor,
   TaskPage,
   TaskStatus,
 } from './types';
@@ -1771,18 +1772,6 @@ async function deleteSkillGroup(id: string): Promise<void> {
 
 // ══════════════════════════ 任务选项卡 ══════════════════════════
 
-/** 任务是否匹配当前搜索/筛选（client-side，不过滤数据源本身） */
-function taskMatches(t: Task): boolean {
-  if (taskStatusFilter !== 'all' && t.status !== taskStatusFilter) {
-    return false;
-  }
-  const q = taskSearch.trim().toLowerCase();
-  if (q && !t.itemKey.toLowerCase().includes(q)) {
-    return false;
-  }
-  return true;
-}
-
 /** 渲染任务选项卡：工具栏（搜索+筛选）/ 批量操作条 / 列表容器 */
 function renderTasks(): void {
   if (!api) {
@@ -1933,14 +1922,17 @@ function renderTaskList(): void {
     let groupMatches = 0;
     for (const status of STATBAR_ORDER) {
       if (taskStatusFilter !== 'all' && taskStatusFilter !== status) {
-        pages[status] = { items: [], total: 0 };
+        pages[status] = { items: [], total: 0, nextCursor: null };
         continue;
       }
-      const key = taskStatusGroupKey(sg.id, status);
-      const page = api.tasks.listPage(
-        { skillGroupId: sg.id, status },
-        { limit: taskVisibleLimits.get(key) ?? TASK_PAGE_SIZE, itemKeyContains: taskSearch }
-      );
+      // Count exact search matches, but do not fetch or render any task rows
+      // for a collapsed status. Cached counts make the normal view O(1).
+      const page: TaskPage = taskSearch.trim()
+        ? api.tasks.listPage(
+          { skillGroupId: sg.id, status },
+          { limit: 0, itemKeyContains: taskSearch }
+        )
+        : { items: [], total: counts[status] ?? 0, nextCursor: null };
       pages[status] = page;
       groupMatches += page.total;
     }
@@ -2016,45 +2008,91 @@ function pagedStatusSection(
   icon.style.color = 'var(--' + (meta.badge === 'accent' ? 'accent' : meta.badge) + ')';
   icon.innerHTML = iconSVG(meta.icon, 'ic ic-sm');
   summary.append(icon);
-  summary.append(document.createTextNode(
-    status === 'done'
-      ? getString('panel-task-done-summary', { n: page.total })
-      : meta.label + '（' + page.total + '）'
-  ));
+  let count = page.total;
+  const summaryText = document.createTextNode('');
+  const refreshCount = (): void => {
+    summaryText.textContent = status === 'done'
+      ? getString('panel-task-done-summary', { n: count })
+      : meta.label + '（' + count + '）';
+  };
+  refreshCount();
+  summary.append(summaryText);
   const chev = el('span', 'chev');
   chev.innerHTML = iconSVG('chevron-down', 'ic ic-sm');
   summary.append(chev);
   details.append(summary);
 
   const rows = el('div', 'task-page-rows');
-  for (const task of page.items) rows.append(taskItem(task));
-  if (page.total === 0) rows.append(el('div', 'task-none', getString('panel-task-none')));
   details.append(rows);
-
-  const updateMoreLabel = (button: HTMLButtonElement, shown: number, total: number): void => {
-    const label = getString('panel-task-more', { shown, total });
-    const textNode = Array.from(button.childNodes).find(n => n?.nodeType === Node.TEXT_NODE);
-    if (textNode) textNode.textContent = label;
-    else button.append(document.createTextNode(label));
-  };
-  const more = opBtn(getString('panel-task-more', {
-    shown: page.items.length, total: page.total,
-  }), () => {
-    if (!api) return;
-    const displayed = rows.querySelectorAll('.task-item').length;
+  let cursor: TaskCursor | null = null;
+  let hydrated = false;
+  const more = opBtn('', () => {
+    if (!api || !hydrated || !cursor) return;
+    // The cursor is tied to the final displayed sort tuple. Newly completed
+    // tasks inserted at the beginning therefore cannot shift subsequent pages.
     const next = api.tasks.listPage(
       { skillGroupId, status },
-      { offset: displayed, limit: TASK_PAGE_SIZE, itemKeyContains: taskSearch }
+      { after: cursor, limit: TASK_PAGE_SIZE, itemKeyContains: taskSearch }
     );
-    for (const task of next.items) rows.append(taskItem(task));
-    const newCount = displayed + next.items.length;
-    taskVisibleLimits.set(key, newCount);
-    updateMoreLabel(more, newCount, next.total);
-    more.hidden = newCount >= next.total || next.items.length === 0;
+    const existing = new Set(
+      Array.from(rows.querySelectorAll<HTMLElement>('.task-item')).map(row => row.dataset.taskId)
+    );
+    for (const task of next.items) {
+      if (!existing.has(task.id)) {
+        rows.append(taskItem(task));
+        existing.add(task.id);
+      }
+    }
+    cursor = next.nextCursor;
+    count = next.total;
+    refreshCount();
+    const shown = rows.querySelectorAll('.task-item').length;
+    taskVisibleLimits.set(key, shown);
+    setMoreLabel(shown, count);
+    more.hidden = !cursor || next.items.length === 0;
   }, { icon: 'chevron-down', secondary: true });
   more.classList.add('task-more');
-  more.hidden = page.items.length >= page.total;
+  more.hidden = true;
   details.append(more);
+
+  function setMoreLabel(shown: number, total: number): void {
+    const label = getString('panel-task-more', { shown, total });
+    const textNode = Array.from(more.childNodes).find(
+      n => n?.nodeType === Node.TEXT_NODE
+    );
+    if (textNode) textNode.textContent = label;
+    else more.append(document.createTextNode(label));
+  }
+
+  function hydrate(): void {
+    if (!api || hydrated) return;
+    const first = api.tasks.listPage(
+      { skillGroupId, status },
+      { limit: taskVisibleLimits.get(key) ?? TASK_PAGE_SIZE, itemKeyContains: taskSearch }
+    );
+    rows.replaceChildren();
+    for (const task of first.items) rows.append(taskItem(task));
+    if (!first.total) rows.append(el('div', 'task-none', getString('panel-task-none')));
+    cursor = first.nextCursor;
+    count = first.total;
+    refreshCount();
+    setMoreLabel(first.items.length, count);
+    more.hidden = !cursor;
+    hydrated = true;
+  }
+
+  // A collapsed status has zero task-row DOM nodes and issues no page query.
+  // Drop rows when collapsing to avoid retaining large hidden DOM subtrees.
+  if (details.open) hydrate();
+  details.addEventListener('toggle', () => {
+    if (details.open) hydrate();
+    else {
+      rows.replaceChildren();
+      hydrated = false;
+      cursor = null;
+      more.hidden = true;
+    }
+  });
   return details;
 }
 
@@ -2136,6 +2174,7 @@ function relTime(ts: number | null | undefined): HTMLElement {
 /** 单条任务（含展开详情）外层容器：展开按钮 + 多选框 + 任务行 + 详情区 */
 function taskItem(t: Task): HTMLElement {
   const item = el('div', 'task-item');
+  item.dataset.taskId = t.id;
   const expanded = expandedTasks.has(t.id);
   if (expanded) {
     item.classList.add('expanded');
@@ -2232,12 +2271,25 @@ function taskItem(t: Task): HTMLElement {
 
 /** 切换任务详情展开/收起 */
 function toggleTaskDetail(id: string): void {
-  if (expandedTasks.has(id)) {
-    expandedTasks.delete(id);
-  } else {
-    expandedTasks.add(id);
+  const isExpanded = expandedTasks.has(id);
+  if (isExpanded) expandedTasks.delete(id);
+  else expandedTasks.add(id);
+  // Update just the visible row; rebuilding every status here would cause
+  // unnecessary queries and DOM churn on every detail expand/collapse.
+  const items = document.querySelectorAll<HTMLElement>('#task-list .task-item');
+  for (const item of items) {
+    if (item.dataset.taskId !== id) continue;
+    item.classList.toggle('expanded', !isExpanded);
+    const button = item.querySelector<HTMLButtonElement>('.exp-btn');
+    if (button) {
+      button.title = getString(isExpanded ? 'panel-task-expand' : 'panel-task-collapse');
+      button.setAttribute('aria-expanded', String(!isExpanded));
+      button.setAttribute('aria-label', button.title);
+    }
+    item.querySelector('.task-detail')?.remove();
+    const task = api?.tasks.get(id);
+    if (!isExpanded && task) item.append(taskDetail(task));
   }
-  renderTaskList();
 }
 
 /** 任务详情区：指令快照 / 技能组版本 / 材料清单 / 交付物 / 时间线 / 尝试次数 */
