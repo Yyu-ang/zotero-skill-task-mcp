@@ -2031,7 +2031,15 @@ function pagedStatusSection(
   if (page.total === 0) rows.append(el('div', 'task-none', getString('panel-task-none')));
   details.append(rows);
 
-  const more = opBtn('', () => {
+  const updateMoreLabel = (button: HTMLButtonElement, shown: number, total: number): void => {
+    const label = getString('panel-task-more', { shown, total });
+    const textNode = Array.from(button.childNodes).find(n => n.nodeType === Node.TEXT_NODE);
+    if (textNode) textNode.textContent = label;
+    else button.append(document.createTextNode(label));
+  };
+  const more = opBtn(getString('panel-task-more', {
+    shown: page.items.length, total: page.total,
+  }), () => {
     if (!api) return;
     const displayed = rows.querySelectorAll('.task-item').length;
     const next = api.tasks.listPage(
@@ -2041,11 +2049,10 @@ function pagedStatusSection(
     for (const task of next.items) rows.append(taskItem(task));
     const newCount = displayed + next.items.length;
     taskVisibleLimits.set(key, newCount);
-    more.textContent = getString('panel-task-more', { shown: newCount, total: next.total });
+    updateMoreLabel(more, newCount, next.total);
     more.hidden = newCount >= next.total || next.items.length === 0;
   }, { icon: 'chevron-down', secondary: true });
   more.classList.add('task-more');
-  more.textContent = getString('panel-task-more', { shown: page.items.length, total: page.total });
   more.hidden = page.items.length >= page.total;
   details.append(more);
   return details;
