@@ -31,6 +31,7 @@ import type {
   SkillScope,
   SkillTaskAPI,
   Task,
+  TaskPage,
   TaskStatus,
 } from './types';
 import { deliverableLabel } from './deliverables';
@@ -43,6 +44,7 @@ import {
   isShortcutEnabled,
 } from './prefs';
 import { getPanelShortcutLabel, isShortcutKeyReserved } from './ui';
+import { renderActivityDashboard } from './activityDashboard';
 
 /** 选项卡 id */
 type TabId = 'skills' | 'tasks' | 'mcp' | 'settings';
@@ -432,6 +434,9 @@ const selectedTasks = new Set<string>();
 const expandedTasks = new Set<string>();
 /** 任务状态大栏目的展开状态；重绘任务列表时必须保持用户当前折叠/展开选择 */
 const taskStatusGroupOpen = new Map<string, boolean>();
+/** One page (20) per skill/status; the user explicitly requests additional pages. */
+const TASK_PAGE_SIZE = 20;
+const taskVisibleLimits = new Map<string, number>();
 /** MCP 审计视图展示的最近事件条数 */
 const AUDIT_LIMIT = 20;
 
@@ -1786,6 +1791,10 @@ function renderTasks(): void {
   const root = $<HTMLElement>('tab-tasks');
   root.replaceChildren();
   const groups = api.skillGroups.list(true);
+  root.append(renderActivityDashboard(
+    api.tasks.activityStats(),
+    new Map(groups.map(group => [group.id, group.name]))
+  ));
   if (!groups.length) {
     root.append(
       emptyState(
@@ -1813,6 +1822,7 @@ function renderTasks(): void {
   clearBtn.hidden = !taskSearch;
   clearBtn.addEventListener('click', () => {
     taskSearch = '';
+    taskVisibleLimits.clear();
     const inp = document.getElementById('task-search-input') as HTMLInputElement | null;
     if (inp) {
       inp.value = '';
@@ -1824,6 +1834,7 @@ function renderTasks(): void {
   searchInput.id = 'task-search-input';
   searchInput.addEventListener('input', () => {
     taskSearch = searchInput.value;
+    taskVisibleLimits.clear();
     clearBtn.hidden = !taskSearch;
     renderTaskList();
   });
@@ -1840,6 +1851,7 @@ function renderTasks(): void {
   filterSel.value = taskStatusFilter;
   filterSel.addEventListener('change', () => {
     taskStatusFilter = filterSel.value as TaskStatus | 'all';
+    taskVisibleLimits.clear();
     renderTaskList();
   });
   toolbar.append(filterSel);
@@ -1892,28 +1904,20 @@ function renderTasks(): void {
 }
 
 /** 渲染任务列表区（只重建列表容器；保留工具栏与输入焦点） */
+/** Render bounded pages only; filter counts stay exact without copying every task to the panel. */
 function renderTaskList(): void {
-  if (!api) {
-    return;
-  }
+  if (!api) return;
   const wrap = document.getElementById('task-list');
-  if (!wrap) {
-    return;
-  }
+  if (!wrap) return;
   wrap.replaceChildren();
   const groups = api.skillGroups.list(true);
+  const knownGroups = new Set(groups.map(group => group.id));
 
-  // 修剪已选：任务已不存在或已变为不可选（已完成/已取消）时移出选择
-  const stillSelectable = new Set<string>();
-  for (const sg of groups) {
-    for (const t of api.tasks.list({ skillGroupId: sg.id })) {
-      if (t.status !== 'done' && t.status !== 'cancelled') {
-        stillSelectable.add(t.id);
-      }
-    }
-  }
+  // Selected tasks can be checked individually; no need to list all tasks.
   for (const id of [...selectedTasks]) {
-    if (!stillSelectable.has(id)) {
+    const task = api.tasks.get(id);
+    if (!task || !knownGroups.has(task.skillGroupId) ||
+        task.status === 'done' || task.status === 'cancelled') {
       selectedTasks.delete(id);
     }
   }
@@ -1923,16 +1927,27 @@ function renderTaskList(): void {
   let total = 0;
   let shownGroups = 0;
   for (const sg of groups) {
-    const all = api.tasks.list({ skillGroupId: sg.id });
-    total += all.length;
-    const shown = all.filter(taskMatches);
-    matched += shown.length;
-    // 筛选时隐藏无匹配的技能组，保持紧凑
-    if (filterActive && shown.length === 0) {
-      continue;
+    const counts = api.tasks.countsBySkill(sg.id);
+    total += STATBAR_ORDER.reduce((sum, st) => sum + (counts[st] ?? 0), 0);
+    const pages = {} as Record<TaskStatus, TaskPage>;
+    let groupMatches = 0;
+    for (const status of STATBAR_ORDER) {
+      if (taskStatusFilter !== 'all' && taskStatusFilter !== status) {
+        pages[status] = { items: [], total: 0 };
+        continue;
+      }
+      const key = taskStatusGroupKey(sg.id, status);
+      const page = api.tasks.listPage(
+        { skillGroupId: sg.id, status },
+        { limit: taskVisibleLimits.get(key) ?? TASK_PAGE_SIZE, itemKeyContains: taskSearch }
+      );
+      pages[status] = page;
+      groupMatches += page.total;
     }
+    matched += groupMatches;
+    if (filterActive && groupMatches === 0) continue;
     shownGroups++;
-    wrap.append(taskGroupSection(sg, filterActive ? shown : undefined));
+    wrap.append(taskGroupSection(sg, pages, filterActive));
   }
 
   const info = document.getElementById('task-filter-info');
@@ -1941,7 +1956,6 @@ function renderTaskList(): void {
   }
 
   if (filterActive && shownGroups === 0) {
-    // 筛选无结果：带清除筛选的空状态
     wrap.append(
       emptyState('search', getString('panel-empty-no-match-title'), getString('panel-empty-no-match-desc'), {
         label: getString('panel-action-clear-filter'),
@@ -1949,12 +1963,12 @@ function renderTaskList(): void {
         onClick: () => {
           taskSearch = '';
           taskStatusFilter = 'all';
+          taskVisibleLimits.clear();
           renderTasks();
         },
       })
     );
   } else if (!filterActive && total === 0) {
-    // 全部技能组都没有任务：整体空状态（原有行为）
     wrap.replaceChildren();
     wrap.append(
       emptyState(
@@ -1986,116 +2000,121 @@ function bindTaskStatusGroupState(
 }
 
 /** 单个技能组的任务分组块；filtered 传入时只展示其中任务（搜索/筛选命中） */
-function taskGroupSection(sg: SkillGroup, filtered?: Task[]): HTMLElement {
+/** Render one status group using only the currently requested records. */
+function pagedStatusSection(
+  skillGroupId: string,
+  status: TaskStatus,
+  page: TaskPage,
+  key: string,
+  defaultOpen: boolean
+): HTMLElement {
+  const details = el('details', 'status-group') as HTMLDetailsElement;
+  bindTaskStatusGroupState(details, key, defaultOpen);
+  const summary = el('summary');
+  const icon = el('span', 'sum-ic');
+  const meta = STATUS_META[status];
+  icon.style.color = 'var(--' + (meta.badge === 'accent' ? 'accent' : meta.badge) + ')';
+  icon.innerHTML = iconSVG(meta.icon, 'ic ic-sm');
+  summary.append(icon);
+  summary.append(document.createTextNode(
+    status === 'done'
+      ? getString('panel-task-done-summary', { n: page.total })
+      : meta.label + '（' + page.total + '）'
+  ));
+  const chev = el('span', 'chev');
+  chev.innerHTML = iconSVG('chevron-down', 'ic ic-sm');
+  summary.append(chev);
+  details.append(summary);
+
+  const rows = el('div', 'task-page-rows');
+  for (const task of page.items) rows.append(taskItem(task));
+  if (page.total === 0) rows.append(el('div', 'task-none', getString('panel-task-none')));
+  details.append(rows);
+
+  const more = opBtn('', () => {
+    if (!api) return;
+    const displayed = rows.querySelectorAll('.task-item').length;
+    const next = api.tasks.listPage(
+      { skillGroupId, status },
+      { offset: displayed, limit: TASK_PAGE_SIZE, itemKeyContains: taskSearch }
+    );
+    for (const task of next.items) rows.append(taskItem(task));
+    const newCount = displayed + next.items.length;
+    taskVisibleLimits.set(key, newCount);
+    more.textContent = getString('panel-task-more', { shown: newCount, total: next.total });
+    more.hidden = newCount >= next.total || next.items.length === 0;
+  }, { icon: 'chevron-down', secondary: true });
+  more.classList.add('task-more');
+  more.textContent = getString('panel-task-more', { shown: page.items.length, total: page.total });
+  more.hidden = page.items.length >= page.total;
+  details.append(more);
+  return details;
+}
+
+/** Task group header and six independently paginated status groups. */
+function taskGroupSection(
+  sg: SkillGroup,
+  pages: Record<TaskStatus, TaskPage>,
+  filtering: boolean
+): HTMLElement {
   const sec = el('section', 'card');
-  // —— 头部：名称 + 计数（调 tasks.countsBySkill，必须与下方明细一致） ——
   const counts = api!.tasks.countsBySkill(sg.id);
   const done = counts.done ?? 0;
-  const undone =
-    (counts['waiting-material'] ?? 0) +
-    (counts.pending ?? 0) +
-    (counts.claimed ?? 0) +
-    (counts.failed ?? 0) +
-    (counts.cancelled ?? 0);
+  const undone = (counts['waiting-material'] ?? 0) +
+    (counts.pending ?? 0) + (counts.claimed ?? 0) +
+    (counts.failed ?? 0) + (counts.cancelled ?? 0);
   const head = el('div', 'card-head');
   const sgIcon = el('span', 'sg-ic');
   sgIcon.innerHTML = iconSVG('layers', 'ic');
-  head.append(sgIcon);
-  head.append(el('h3', '', sg.name));
-  head.append(groupBadge(sg));
-  const countEl = el('span', 'count', '');
-  const strongDone = el('strong', '', String(done));
-  const strongUndone = el('strong', '', String(undone));
-  countEl.append(getString('panel-task-count-done') + ' ', strongDone, ' · ' + getString('panel-task-count-undone') + ' ', strongUndone);
+  head.append(sgIcon, el('h3', '', sg.name), groupBadge(sg));
+  const countEl = el('span', 'count');
+  countEl.append(
+    getString('panel-task-count-done') + ' ', el('strong', '', String(done)),
+    ' · ' + getString('panel-task-count-undone') + ' ', el('strong', '', String(undone))
+  );
   head.append(countEl);
   sec.append(head);
 
   const ops = el('div', 'ops');
-  ops.append(
-    opBtn(sg.enabled ? getString('panel-action-pause') : getString('panel-action-resume'), () => setSkillEnabled(sg, !sg.enabled), {
+  ops.append(opBtn(
+    sg.enabled ? getString('panel-action-pause') : getString('panel-action-resume'),
+    () => setSkillEnabled(sg, !sg.enabled), {
       icon: sg.enabled ? 'pause' : 'play',
       title: sg.enabled ? getString('panel-action-pause-title') : getString('panel-action-resume-title'),
-    })
-  );
-  const rescanBtn = opBtn(getString('panel-action-scan'), () => rescan(sg.id), {
-    icon: 'search',
-    title: getString('panel-action-scan-title'),
+    }
+  ));
+  const scan = opBtn(getString('panel-action-scan'), () => rescan(sg.id), {
+    icon: 'search', title: getString('panel-action-scan-title'),
   });
-  rescanBtn.id = `rescan-btn-${sg.id}`;
-  ops.append(rescanBtn);
+  scan.id = 'rescan-btn-' + sg.id;
+  ops.append(scan);
   sec.append(ops);
 
-  // 扫描进度条（扫描时显示 done/total + 进度）
-  const prog = el('div', 'scan-prog');
-  prog.id = `scan-prog-${sg.id}`;
-  prog.hidden = true;
+  const progress = el('div', 'scan-prog');
+  progress.id = 'scan-prog-' + sg.id;
+  progress.hidden = true;
   const track = el('div', 'prog-track');
   const fill = el('div', 'prog-fill');
-  fill.id = `scan-fill-${sg.id}`;
+  fill.id = 'scan-fill-' + sg.id;
   track.append(fill);
-  const ptext = el('span', 'prog-text');
-  ptext.id = `scan-text-${sg.id}`;
-  prog.append(track, ptext);
-  sec.append(prog);
+  const progressText = el('span', 'prog-text');
+  progressText.id = 'scan-text-' + sg.id;
+  progress.append(track, progressText);
+  sec.append(progress);
 
-  // —— 明细：各状态分组（图标+标签+计数；筛选时只展示有命中的分组） ——
-  const tasks = filtered ?? api!.tasks.list({ skillGroupId: sg.id });
-  const filtering = filtered !== undefined;
   for (const st of ACTIVE_STATUS_ORDER) {
-    const items = tasks.filter((t) => t.status === st);
-    if (filtering && items.length === 0) {
-      continue;
-    }
-    const det = el('details', 'status-group') as HTMLDetailsElement;
-    bindTaskStatusGroupState(
-      det,
-      taskStatusGroupKey(sg.id, st),
-      items.length > 0 && st !== 'cancelled'
-    );
-    const sum = el('summary');
-    const sumIc = el('span', 'sum-ic');
-    sumIc.style.color = `var(--${STATUS_META[st].badge === 'accent' ? 'accent' : STATUS_META[st].badge})`;
-    sumIc.innerHTML = iconSVG(STATUS_META[st].icon, 'ic ic-sm');
-    sum.append(sumIc);
-    sum.append(document.createTextNode(`${STATUS_META[st].label}（${items.length}）`));
-    const chev = el('span', 'chev');
-    chev.innerHTML = iconSVG('chevron-down', 'ic ic-sm');
-    sum.append(chev);
-    det.append(sum);
-    if (!items.length) {
-      det.append(el('div', 'task-none', getString('panel-task-none')));
-    }
-    for (const t of items) {
-      det.append(taskItem(t));
-    }
-    sec.append(det);
+    const page = pages[st];
+    if (filtering && page.total === 0) continue;
+    sec.append(pagedStatusSection(
+      sg.id, st, page, taskStatusGroupKey(sg.id, st),
+      page.total > 0 && st !== 'cancelled'
+    ));
   }
-  // 已完成：可折叠列表，支持展开详情
-  const dones = tasks.filter((t) => t.status === 'done');
-  if (!filtering || dones.length > 0) {
-    const doneDet = el('details', 'status-group') as HTMLDetailsElement;
-    bindTaskStatusGroupState(
-      doneDet,
-      taskStatusGroupKey(sg.id, 'done'),
-      false
-    );
-    const doneSum = el('summary');
-    const doneIc = el('span', 'sum-ic');
-    doneIc.style.color = 'var(--ok)';
-    doneIc.innerHTML = iconSVG('check-circle', 'ic ic-sm');
-    doneSum.append(doneIc);
-    doneSum.append(document.createTextNode(getString('panel-task-done-summary', { n: dones.length })));
-    const doneChev = el('span', 'chev');
-    doneChev.innerHTML = iconSVG('chevron-down', 'ic ic-sm');
-    doneSum.append(doneChev);
-    doneDet.append(doneSum);
-    if (!dones.length) {
-      doneDet.append(el('div', 'task-none', getString('panel-task-none')));
-    }
-    for (const t of dones) {
-      doneDet.append(taskItem(t));
-    }
-    sec.append(doneDet);
+  const donePage = pages.done;
+  if (!filtering || donePage.total > 0) {
+    sec.append(pagedStatusSection(
+      sg.id, 'done', donePage, taskStatusGroupKey(sg.id, 'done'), false
+    ));
   }
   return sec;
 }
