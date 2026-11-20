@@ -361,8 +361,10 @@ export interface ScanResult {
 export interface ScanOptions {
   /** 可中断 */
   signal?: AbortSignal;
-  /** 进度回调 (已处理, 总数) */
+  /** 当前技能组范围内的独立书目父条目进度（不含附件和笔记）。 */
   onProgress?: (done: number, total: number) => void;
+  /** 每处理一条范围内文献触发；扫描全部技能组时用于统计不同文献数。 */
+  onScannedItem?: (libraryID: number, itemKey: string) => void;
 }
 
 // ──────────── 存储接口 ────────────

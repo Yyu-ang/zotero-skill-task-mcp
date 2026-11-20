@@ -249,30 +249,48 @@ export class TaskGenerator implements ITaskGenerator {
     result: ScanResult,
   ): Promise<ScanResult> {
     const Z: any = (globalThis as any).Zotero;
-    // 枚举全库候选条目（等价于任务书的 s.libraryID = userLibraryID 写法，
-    // types 里 libraryID 是只读属性，故用构造参数传入）
-    const search = new Z.Search({
-      libraryID: Z.Libraries.userLibraryID,
-    });
-    const ids = await search.search();
-    const total = ids.length;
-    log(`[TaskGenerator] 开始扫描技能组「${sg.name}」，候选条目 ${total}`);
+    // Search only the user's library and ask Zotero to suppress child items.
+    // Verify item types again: standalone notes and standalone attachments can
+    // still appear at the top level, but must never count as literature.
+    const search = new Z.Search();
+    search.libraryID = Z.Libraries.userLibraryID;
+    search.addCondition('noChildren', 'true');
+    const ids: number[] = await search.search();
+    const documents: any[] = [];
+    const seen = new Set<string>();
 
+    // Determine the actual number of distinct regular items in this skill
+    // group's scope BEFORE presenting progress. Search IDs are not documents.
     for (let i = 0; i < ids.length; i += SCAN_CHUNK_SIZE) {
-      if (opts.signal?.aborted) {
-        log('[TaskGenerator] 扫描被中断，已处理部分保留，重跑可续');
-        return result;
-      }
-      const chunk = ids.slice(i, i + SCAN_CHUNK_SIZE);
-      const items = await Z.Items.getAsync(chunk);
+      if (opts.signal?.aborted) return result;
+      const items: any[] = await Z.Items.getAsync(ids.slice(i, i + SCAN_CHUNK_SIZE));
       for (const item of items) {
-        if (!isParentItem(item)) continue;
-        if (opts.signal?.aborted) {
-          log('[TaskGenerator] 扫描被中断，已处理部分保留，重跑可续');
-          return result;
+        if (opts.signal?.aborted) return result;
+        if (!item || item.deleted || !item.key || !isParentItem(item) ||
+            item.libraryID !== Z.Libraries.userLibraryID) continue;
+        const identity = String(item.libraryID) + ':' + item.key;
+        if (seen.has(identity)) continue;
+        seen.add(identity);
+        try {
+          if (await this.skillGroups.matchesScope(sg, item)) documents.push(item);
+        } catch (e) {
+          result.completionErrors++;
+          error('[TaskGenerator] 范围检查失败，已跳过:', sg.id, identity, e);
         }
+      }
+    }
+
+    const total = documents.length;
+    log('[TaskGenerator] 开始扫描技能组「' + sg.name + '」，范围内独立文献 ' + total);
+    opts.onProgress?.(0, total);
+    for (let i = 0; i < total; i += SCAN_CHUNK_SIZE) {
+      if (opts.signal?.aborted) return result;
+      const chunk = documents.slice(i, i + SCAN_CHUNK_SIZE);
+      for (const item of chunk) {
+        if (opts.signal?.aborted) return result;
         await this.processItemForSkillGroup(sg, item, result);
         result.scanned++;
+        opts.onScannedItem?.(item.libraryID, item.key);
       }
       opts.onProgress?.(Math.min(i + chunk.length, total), total);
     }

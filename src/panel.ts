@@ -3124,6 +3124,7 @@ async function scanAllGroups(): Promise<void> {
   }
   scanAllRunning = true;
   clearError();
+  const uniqueItems = new Set<string>();
   const bar = $<HTMLDivElement>('global-scan');
   const fill = $<HTMLDivElement>('global-fill');
   const text = $<HTMLSpanElement>('global-text');
@@ -3132,6 +3133,7 @@ async function scanAllGroups(): Promise<void> {
   text.textContent = getString('panel-scan-all-progress');
   try {
     const results = await api.generator.scanAllEnabled({
+      onScannedItem: (libraryID, itemKey) => uniqueItems.add(`${libraryID}:${itemKey}`),
       onProgress: (done, total) => {
         fill.style.width = total > 0 ? `${Math.round((done / total) * 100)}%` : '0%';
         text.textContent = getString('panel-scan-all-progress-n', { done, total });
@@ -3161,7 +3163,8 @@ async function scanAllGroups(): Promise<void> {
     text.textContent =
       getString('panel-scan-all-done', {
         n: results.length,
-        scanned: agg.scanned,
+        scanned: uniqueItems.size,
+        checks: agg.scanned,
         created: agg.created,
         skipped: agg.skipped,
         waiting: agg.waitingMaterial,
