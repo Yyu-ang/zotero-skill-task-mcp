@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - feature/mcp-lan-listener-23121
+      - 'beta/**'
 
 jobs:
   validate:
@@ -22,5 +23,5 @@ jobs:
       - name: Upload XPI test build
         uses: actions/upload-artifact@v4
         with:
-          name: zotero-skill-task-lan-xpi
+          name: zotero-skill-task-xpi-${{ github.sha }}
           path: dist/*.xpi

@@ -297,7 +297,7 @@ assert.ok(
   'expanding one task must preserve the user-selected open/closed state of status groups'
 );
 assert.ok(
-  panelTs.includes('resolveTaskItem(t.itemKey)') &&
+  panelTs.includes('resolveTaskItem(t.itemKey, t.libraryID)') &&
     panelTs.includes("panel-detail-item-title") &&
     panelTs.includes("panel-detail-view-in-library") &&
     panelTs.includes('await pane.selectItem(item.id)') &&

@@ -36,6 +36,8 @@ import type {
   Task,
 } from './types';
 import { DATA_DIR_NAME } from './types';
+import { assertValidCompletionRule, findMatchingBuiltinNote, NOTE_COMPLETION_RULE_SCHEMA } from './noteCompletion';
+import { existingNoteResult, supportsNoteCompletion, taskLibraryID, withTaskLock } from './taskCoordinator';
 import { resolveEarliestPdfPath } from './taskGenerator';
 import { prefs, getLeaseMs } from './prefs';
 import { LanMcpListener, LAN_MCP_PORT, LAN_MCP_PATH } from './lanMcpListener';
@@ -1116,6 +1118,7 @@ export class McpServer implements IMcpServer {
                     },
                   },
                   deliverable: deliverableSchema,
+                  completionRule: NOTE_COMPLETION_RULE_SCHEMA,
                   scanNow: { type: 'boolean' },
                 },
                 required: ['name', 'instruction'],
@@ -1165,6 +1168,7 @@ export class McpServer implements IMcpServer {
                     enum: ['note', 'file', 'markdown'],
                   },
                   duplicate: { type: 'boolean' },
+                  completionOrigin: { type: 'string', enum: ['agent', 'existing-note', 'existing-attachment'] },
                   revised: { type: 'boolean' },
                   submissionCount: { type: 'integer' },
                   error: { type: 'string' },
@@ -1499,6 +1503,7 @@ export class McpServer implements IMcpServer {
         scope,
         materials,
         deliverable,
+        completionRule: assertValidCompletionRule(params?.completionRule),
       });
 
       if (
@@ -1583,74 +1588,88 @@ export class McpServer implements IMcpServer {
       // 最早创建优先；时间相同按 id 稳定排序
       .sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1));
 
+    let checkFailed = false;
     for (const p of pendings) {
-      const task = await this.claimTaskById(p.id);
-      if (!task) {
-        continue; // 并发下已被其他领取者拿走，试下一条
-      }
-      const sg = this.skillGroups.get(task.skillGroupId);
-      if (!sg) {
-        // 技能组被硬删除：任务成孤儿，标记失败使其在界面可见（不静默丢弃）
-        await this.tasks
-          .fail(task.id, '技能组不存在，任务无法执行')
-          .catch(() => undefined);
-        continue;
-      }
-      if (sg.archived || !sg.enabled) {
-        // 领取瞬间被停用/归档：放回待领取（不记为失败），继续找下一条
-        await this.requeueTask(task.id);
-        continue;
-      }
-      const materials = await this.buildMaterialPackage(sg, task.itemKey);
-      const skillAssets = await this.skillGroups.getAssetManifest(sg.id);
-      if (sg.referencesEnabled !== true) {
-        skillAssets.references = [];
-      }
-      return {
-        task: {
-          id: task.id,
-          skillGroupId: task.skillGroupId,
-          skillGroupVersion: task.skillGroupVersion,
-          instruction: task.instructionSnapshot,
-          skillDescription: sg.description ?? '',
-          skillAssets,
-          referencesDescription:
-            sg.referencesEnabled === true ? sg.referencesDescription ?? '' : '',
-          itemKey: task.itemKey,
-          leaseExpiresAt: task.leaseExpiresAt ?? Date.now() + getLeaseMs(),
-          // FR-07：领取结果携带交付物 schema，提交时须按此格式
-          deliverable: normalizeDeliverable(sg.deliverable),
-        },
-        materials,
-      };
+      const result = await withTaskLock(p.skillGroupId, p.libraryID, p.itemKey, async (): Promise<ClaimResult | null> => {
+        const pending = this.tasks.get(p.id);
+        if (!pending || pending.status !== 'pending') return null;
+        const sg = this.skillGroups.get(pending.skillGroupId);
+        if (!sg || sg.archived || !sg.enabled) return null;
+        const parent = await this.resolveParentItem(pending.itemKey, pending.libraryID);
+        if (!parent) {
+          await this.tasks.fail(pending.id, 'parent-item-missing');
+          return null;
+        }
+        if (!(await this.skillGroups.matchesScope(sg, parent))) return null;
+        const match = await findMatchingBuiltinNote(parent, sg.completionRule);
+        const current = this.skillGroups.get(sg.id);
+        if (!current || !current.enabled || current.archived || current.version !== sg.version) return null;
+        if (match.status === 'error' || (sg.completionRule?.enabled && !supportsNoteCompletion(sg.deliverable))) {
+          await this.tasks.recordCompletionCheckError(pending.id,
+            match.status === 'error' ? match.error : '已有笔记完成判定仅支持内建笔记交付物');
+          checkFailed = true;
+          return null;
+        }
+        if (match.status === 'matched') {
+          await this.tasks.recognizeExistingNote(pending.id, existingNoteResult(sg, match));
+          return null;
+        }
+        await this.tasks.recordCompletionCheckError(pending.id, null);
+        const task = await this.tasks.claimById(pending.id, getLeaseMs(), {
+          skillGroupVersion: sg.version,
+          instructionSnapshot: sg.instruction,
+          completionRuleSnapshot: sg.completionRule?.enabled ? sg.completionRule : null,
+          deliverableSnapshot: normalizeDeliverable(sg.deliverable),
+        });
+        if (!task) return null;
+        try {
+          const materials = await this.buildMaterialPackage(sg, task.itemKey, task.libraryID);
+          const skillAssets = await this.skillGroups.getAssetManifest(sg.id);
+          if (sg.referencesEnabled !== true) skillAssets.references = [];
+          const stillClaimed = this.tasks.get(task.id);
+          if (!stillClaimed || stillClaimed.status !== 'claimed' ||
+              stillClaimed.leaseExpiresAt === null || stillClaimed.leaseExpiresAt <= Date.now()) return null;
+          const latest = this.skillGroups.get(sg.id);
+          if (!latest || latest.archived || !latest.enabled) {
+            await this.requeueTask(task.id);
+            return null;
+          }
+          return {
+            task: {
+              id: task.id,
+              skillGroupId: task.skillGroupId,
+              skillGroupVersion: task.skillGroupVersion,
+              instruction: task.instructionSnapshot,
+              skillDescription: sg.description ?? '',
+              skillAssets,
+              referencesDescription: sg.referencesEnabled === true ? sg.referencesDescription ?? '' : '',
+              itemKey: task.itemKey,
+              libraryID: taskLibraryID(task.libraryID),
+              leaseExpiresAt: task.leaseExpiresAt ?? Date.now() + getLeaseMs(),
+              deliverable: normalizeDeliverable(sg.deliverable),
+            },
+            materials,
+          };
+        } catch (e) {
+          await this.tasks.fail(task.id, errMsg(e));
+          return null;
+        }
+      });
+      if (result) return result;
     }
-    // FR-06：无任务时返回明确的空队列结果
-    return { task: null, materials: null, message: 'empty-queue' };
+    return { task: null, materials: null, message: checkFailed ? 'completion-check-failed' : 'empty-queue' };
   }
 
   /**
-   * TaskStore 的内部扩展方法（requeue / claimById 不在 ITaskStore 接口内），
+   * TaskStore 的内部放回方法（requeue 不在 ITaskStore 接口内），
    * 这里做结构化调用，避免 mcpServer → taskStore 的类级导入依赖。
    */
   private taskStoreInternal(): {
     requeue?: (taskId: string) => Promise<unknown>;
-    claimById?: (taskId: string, leaseMs: number) => Promise<unknown>;
   } {
     return this.tasks as unknown as {
       requeue?: (taskId: string) => Promise<unknown>;
-      claimById?: (taskId: string, leaseMs: number) => Promise<unknown>;
-    };
-  }
-
-  /** 按 id 领取（内部 claimById 的结构化调用；不支持时记日志不断言） */
-  private async claimTaskById(id: string): Promise<any | null> {
-    const store = this.taskStoreInternal();
-    if (typeof store.claimById !== 'function') {
-      logError('McpServer: 任务存储不支持 claimById，无法领取');
-      return null;
-    }
-    // 注意：必须以 store.claimById(...) 形式调用，保持 this 指向 store
-    return (await store.claimById(id, getLeaseMs())) as any | null;
+      };
   }
 
   /**
@@ -1675,9 +1694,10 @@ export class McpServer implements IMcpServer {
    */
   private async buildMaterialPackage(
     sg: SkillGroup,
-    itemKey: string
+    itemKey: string,
+    libraryID?: number
   ): Promise<MaterialPackage> {
-    const parent = await this.resolveParentItem(itemKey);
+    const parent = await this.resolveParentItem(itemKey, libraryID);
     const pkg: MaterialPackage = {
       itemKey,
       metadata: null,
@@ -1710,24 +1730,15 @@ export class McpServer implements IMcpServer {
   }
 
   /**
-   * 按 itemKey 查找父条目（守卫：遍历全部文库）。
+   * 按任务文库和 itemKey 查找父条目，旧任务缺少文库时使用个人文库。
    * 用 Zotero.Items.getByLibraryAndKey（zotero-types 已核对签名）；
    * 找不到、非父条目或异常时返回 null，调用方按缺失处理。
    */
-  private async resolveParentItem(itemKey: string): Promise<any | null> {
+  private async resolveParentItem(itemKey: string, libraryID?: number): Promise<any | null> {
     try {
       const Z = zoteroGlobal();
-      if (!Z?.Items?.getByLibraryAndKey || !Z?.Libraries?.getAll) {
-        return null;
-      }
-      const libs = Z.Libraries.getAll() as Array<{ libraryID: number }>;
-      for (const lib of libs) {
-        const item = Z.Items.getByLibraryAndKey(lib.libraryID, itemKey);
-        if (item && item !== false && item.isRegularItem?.()) {
-          return item;
-        }
-      }
-      return null;
+      const item = Z?.Items?.getByLibraryAndKey?.(taskLibraryID(libraryID), itemKey);
+      return item && !item.deleted && item.isRegularItem?.() ? item : null;
     } catch {
       return null;
     }
@@ -1748,6 +1759,15 @@ export class McpServer implements IMcpServer {
    */
   @traced
   private async submit(params: any): Promise<SubmitResult> {
+    const taskId = typeof params?.taskId === 'string' ? params.taskId.trim() : '';
+    if (!taskId) return { ok: false, error: 'missing-taskId' };
+    const task = this.tasks.get(taskId);
+    if (!task) return { ok: false, error: 'task-not-found' };
+    return withTaskLock(task.skillGroupId, task.libraryID, task.itemKey,
+      () => this.submitLocked(params));
+  }
+
+  private async submitLocked(params: any): Promise<SubmitResult> {
     const taskId =
       typeof params?.taskId === 'string' ? params.taskId.trim() : '';
     if (!taskId) {
@@ -1771,7 +1791,8 @@ export class McpServer implements IMcpServer {
         noteKey: task.noteKey,
         deliverableType: 'note',
         duplicate: true,
-        submissionCount: Math.max(1, task.submissionCount || 1),
+        submissionCount: task.completionOrigin === 'existing-note' || task.completionOrigin === 'existing-attachment'
+          ? Math.max(0, task.submissionCount || 0) : Math.max(1, task.submissionCount || 1),
       };
     }
 
@@ -1802,13 +1823,13 @@ export class McpServer implements IMcpServer {
       return { ok: false, error: 'skill-group-missing' };
     }
 
-    const deliverable = normalizeDeliverable(sg.deliverable);
+    const deliverable = normalizeDeliverable(task.deliverableSnapshot ?? sg.deliverable);
     const validated = validateSubmitParams(deliverable, params, task.id);
     if (!validated.ok) {
       return { ok: false, error: validated.error };
     }
 
-    const parent = await this.resolveParentItem(task.itemKey);
+    const parent = await this.resolveParentItem(task.itemKey, task.libraryID);
     if (!parent) {
       if (!isRevision) {
         await this.tasks
@@ -1816,6 +1837,33 @@ export class McpServer implements IMcpServer {
           .catch(() => undefined);
       }
       return { ok: false, error: 'parent-item-missing' };
+    }
+
+    if (!isRevision && supportsNoteCompletion(deliverable)) {
+      // Preserve the rule agreed at claim time; old leases without a copy use current config.
+      const rule = task.completionRuleSnapshot === undefined
+        ? sg.completionRule : task.completionRuleSnapshot ?? undefined;
+      const match = await findMatchingBuiltinNote(parent, rule);
+      if (match.status === 'error') {
+        await this.tasks.recordCompletionCheckError(task.id, match.error);
+        return { ok: false, error: `completion-check-failed:${match.error}` };
+      }
+      if (match.status === 'matched') {
+        const completed = await this.tasks.recognizeExistingNote(task.id,
+          existingNoteResult({ ...sg, deliverable, version: task.skillGroupVersion }, match), true);
+        if (!completed) return { ok: false, error: 'task-state-changed' };
+        return this.duplicateResult(completed);
+      }
+    }
+
+    // Reads may take longer than the lease. Do not write using a stale task state.
+    const currentTask = this.tasks.get(task.id);
+    if (!currentTask || currentTask.status !== (isRevision ? 'done' : 'claimed')) {
+      return { ok: false, error: 'task-state-changed' };
+    }
+    if (!isRevision && (currentTask.leaseExpiresAt === null || currentTask.leaseExpiresAt <= Date.now())) {
+      await this.tasks.releaseExpiredLeases();
+      return { ok: false, error: 'lease-expired' };
     }
 
     switch (validated.kind) {
@@ -1862,8 +1910,10 @@ export class McpServer implements IMcpServer {
     const res: SubmitResult = {
       ok: true,
       duplicate: true,
+      completionOrigin: task.completionOrigin ?? 'agent',
       deliverableType: dtype,
-      submissionCount: Math.max(1, task.submissionCount || 1),
+      submissionCount: task.completionOrigin === 'existing-note' || task.completionOrigin === 'existing-attachment'
+          ? Math.max(0, task.submissionCount || 0) : Math.max(1, task.submissionCount || 1),
     };
     if (task.noteKey) {
       res.noteKey = task.noteKey;
@@ -1897,8 +1947,8 @@ export class McpServer implements IMcpServer {
     try {
       let noteKey: string;
       if (revision && task.noteKey) {
-        const existingNote = this.resolveItemByKey(task.noteKey);
-        if (existingNote && existingNote.isNote?.()) {
+        const existingNote = this.resolveItemByKey(task.noteKey, parent.libraryID);
+        if (existingNote && !existingNote.deleted && existingNote.isNote?.() && existingNote.parentID === parent.id) {
           existingNote.setNote(clean);
           await existingNote.saveTx();
           noteKey = task.noteKey;
@@ -1938,17 +1988,10 @@ export class McpServer implements IMcpServer {
     }
   }
 
-  /** 在全部文库中按 key 找条目；用于 revision 原位更新历史笔记/附件。 */
-  private resolveItemByKey(itemKey: string): any | null {
+  /** Keys are unique only within a library. */
+  private resolveItemByKey(itemKey: string, libraryID?: number): any | null {
     try {
-      const Z = zoteroGlobal();
-      if (!Z?.Items?.getByLibraryAndKey || !Z?.Libraries?.getAll) return null;
-      const libs = Z.Libraries.getAll() as Array<{ libraryID: number }>;
-      for (const lib of libs) {
-        const item = Z.Items.getByLibraryAndKey(lib.libraryID, itemKey);
-        if (item && item !== false) return item;
-      }
-      return null;
+      return zoteroGlobal()?.Items?.getByLibraryAndKey?.(taskLibraryID(libraryID), itemKey) || null;
     } catch {
       return null;
     }
@@ -1958,6 +2001,7 @@ export class McpServer implements IMcpServer {
   private async createChildNote(parent: any, html: string): Promise<string> {
     const Z = zoteroGlobal();
     const note = new Z.Item('note');
+    note.libraryID = parent.libraryID;
     note.parentID = parent.id;
     note.setNote(html);
     await note.saveTx();
@@ -2098,7 +2142,7 @@ export class McpServer implements IMcpServer {
     bytes: Uint8Array
   ): Promise<boolean> {
     try {
-      const attachment = this.resolveItemByKey(attachmentKey);
+      const attachment = this.resolveItemByKey(attachmentKey, parent.libraryID);
       if (!attachment || !attachment.isAttachment?.()) return false;
       let absPath = '';
       if (typeof attachment.getFilePathAsync === 'function') {

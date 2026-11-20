@@ -13,6 +13,8 @@
  * - Zotero 条目一律用父条目的 key（item.key），不为附件子条目建任务
  */
 
+import type { NoteCompletionRule } from './noteCompletion';
+
 /** 任务状态机：等待材料 → 待领取 → 已领取（租约中）→ 已完成；另设失败/待重试、已取消 */
 export type TaskStatus =
   | 'waiting-material'
@@ -120,6 +122,8 @@ export interface SkillGroup {
   scope: SkillScope;
   materials: SkillMaterials;
   deliverable: SkillDeliverable;
+  /** 可选的已有内建笔记完成判定；缺省关闭。 */
+  completionRule?: NoteCompletionRule;
   createdAt: number;
   updatedAt: number;
 }
@@ -133,6 +137,7 @@ export interface SkillGroupCreateData {
   scope: SkillScope;
   materials: SkillMaterials;
   deliverable: SkillDeliverable;
+  completionRule?: NoteCompletionRule;
 }
 
 export type SkillGroupPatch = Partial<
@@ -146,10 +151,13 @@ export type SkillGroupPatch = Partial<
     | 'scope'
     | 'materials'
     | 'deliverable'
+    | 'completionRule'
   >
 >;
 
 /** 任务 */
+export type TaskCompletionOrigin = 'agent' | 'existing-note' | 'existing-attachment';
+
 export interface Task {
   id: string;
   skillGroupId: string;
@@ -159,13 +167,23 @@ export interface Task {
   instructionSnapshot: string;
   /** 目标 Zotero 父条目 key */
   itemKey: string;
+  /** 条目所在文库；旧任务缺失时按用户文库处理。 */
+  libraryID?: number;
   status: TaskStatus;
   /** 租约过期时间（claimed 时设置），null 表示无租约 */
   leaseExpiresAt: number | null;
   /** 领取尝试次数 */
   attempts: number;
-  /** 成功提交次数：首次完成=1；后续 revise 每次 +1 */
+  /** 实际成功提交次数；直接识别已有交付物为 0。 */
   submissionCount: number;
+  completionOrigin?: TaskCompletionOrigin;
+  /** 最近确认已有笔记时采用的技能组版本及检查时间。 */
+  completionRuleVersion?: number;
+  completionCheckedAt?: number;
+  /** 领取时冻结规则；null 表示领取时关闭，缺失表示旧任务。 */
+  completionRuleSnapshot?: NoteCompletionRule | null;
+  /** 领取时的交付物格式；技能组编辑不改变已领取任务。 */
+  deliverableSnapshot?: SkillDeliverable;
   lastError: string | null;
   /** 完成时创建的 Zotero 笔记 key（note / markdown→note 时；历史兼容字段） */
   noteKey: string | null;
@@ -188,8 +206,16 @@ export interface TaskCreateData {
   skillGroupVersion: number;
   instructionSnapshot: string;
   itemKey: string;
+  libraryID?: number;
   /** 默认 'pending'；材料不齐时传 'waiting-material' */
   status?: TaskStatus;
+}
+
+export interface TaskClaimContext {
+  skillGroupVersion: number;
+  instructionSnapshot: string;
+  completionRuleSnapshot: NoteCompletionRule | null;
+  deliverableSnapshot?: SkillDeliverable;
 }
 
 export interface TaskFilter {
@@ -271,6 +297,7 @@ export interface ClaimResult {
     /** references 说明，仅 referencesEnabled=true 时有意义 */
     referencesDescription: string;
     itemKey: string;
+    libraryID?: number;
     leaseExpiresAt: number;
     /** 技能组声明的交付物 schema（FR-07）：提交时须按此格式 */
     deliverable: SkillDeliverable;
@@ -283,6 +310,7 @@ export interface ClaimResult {
 /** 提交结果 */
 export interface SubmitResult {
   ok: boolean;
+  completionOrigin?: TaskCompletionOrigin;
   noteKey?: string;
   /** 文件交付物的文件名（相对受控输出目录） */
   fileName?: string;
@@ -308,6 +336,9 @@ export interface TaskCompleteResult {
   deliverableRef: string | null;
   /** 挂成附件时的 Zotero 附件 key（无则为 null） */
   attachmentKey?: string | null;
+  completionOrigin?: TaskCompletionOrigin;
+  completionRuleVersion?: number;
+  completionCheckedAt?: number;
 }
 
 /** 扫描结果统计 */
@@ -321,8 +352,10 @@ export interface ScanResult {
   waitingMaterial: number;
   /** 材料后到，由等待材料转为待领取 */
   promoted: number;
-  /** 因已存在同名附件且策略=skip，扫描时直接标记为已完成 */
+  /** 因匹配已有笔记或同名附件，扫描时直接标记为已完成 */
   completedExisting: number;
+  /** 已有笔记读取/判定失败；这些条目不会被派发。 */
+  completionErrors: number;
 }
 
 export interface ScanOptions {
@@ -357,7 +390,7 @@ export interface ISkillGroupStore {
   /** 删除 references/ 中的一个参考文件 */
   removeReferenceFile(id: string, name: string): Promise<void>;
   /** 条目是否命中技能组范围（父条目；多集合命中仍只算一次，由调用方保证唯一性） */
-  matchesScope(sg: SkillGroup, item: any): Promise<boolean>;
+  matchesScope(sg: Pick<SkillGroup, 'scope'>, item: any): Promise<boolean>;
 }
 
 /** 任务存储（模块 B 实现 src/taskStore.ts，`implements ITaskStore`） */
@@ -369,13 +402,14 @@ export interface ITaskStore {
   /** 幂等键：同一技能组 × 同一条目 的有效任务（非 cancelled/done 视为有效） */
   findActiveBySkillAndItem(
     skillGroupId: string,
-    itemKey: string
+    itemKey: string,
+    libraryID?: number
   ): Task | undefined;
   create(data: TaskCreateData): Promise<Task>;
-  /** 扫描发现既有交付附件时，原子创建一条已完成任务记录 */
+  /** 扫描发现已有交付物时，创建一条带完成来源的记录。 */
   createCompleted(data: TaskCreateData, result: TaskCompleteResult): Promise<Task>;
   /** 取同一技能组 × 条目的最新任务（含 done/cancelled） */
-  findLatestBySkillAndItem(skillGroupId: string, itemKey: string): Task | undefined;
+  findLatestBySkillAndItem(skillGroupId: string, itemKey: string, libraryID?: number): Task | undefined;
   /**
    * 原子领取：取最早的一条 pending（可选限定技能组）→ 标记 claimed + 租约。
    * 无任务返回 null。领取前先释放过期租约。
@@ -384,6 +418,7 @@ export interface ITaskStore {
     skillGroupId: string | undefined,
     leaseMs: number
   ): Promise<Task | null>;
+  claimById(id: string, leaseMs: number, context?: TaskClaimContext): Promise<Task | null>;
   /** 过期租约 → pending，返回释放数量 */
   releaseExpiredLeases(now?: number): Promise<number>;
   /** claimed 且未过期时，把当前 lease 再延长 leaseMs。 */
@@ -395,6 +430,12 @@ export interface ITaskStore {
    * 已 done 直接返回原任务（幂等：重复提交不抛错、引用不变）。
    */
   complete(id: string, result: TaskCompleteResult): Promise<Task>;
+  /** 扫描不能接管已领取任务；提交路径须显式允许当前租约内的任务。 */
+  recognizeExistingNote(id: string, result: TaskCompleteResult, allowClaimed?: boolean): Promise<Task | null>;
+  /** 仅重新开放由已有笔记判定完成的任务，取消任务与实际提交记录不受影响。 */
+  reopenExistingCompletion(id: string, status: 'pending' | 'waiting-material'): Promise<Task | null>;
+  /** 只更新检查错误及检查时间；null 只清除本方法产生的错误。 */
+  recordCompletionCheckError(id: string, message: string | null): Promise<Task>;
   /** 更正已完成任务的交付物引用，并把 submissionCount +1。 */
   reviseComplete(id: string, result: TaskCompleteResult): Promise<Task>;
   fail(id: string, error: string): Promise<Task>;

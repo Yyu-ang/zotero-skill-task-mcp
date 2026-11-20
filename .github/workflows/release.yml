@@ -4,12 +4,14 @@ on:
   push:
     branches:
       - main
+      - 'beta/**'
     paths:
       - package.json
       - package-lock.json
       - addon/**
       - src/**
       - scripts/**
+      - docs/releases/**
       - .github/workflows/release.yml
   workflow_dispatch:
 
@@ -37,23 +39,30 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Read version
+      - name: Read and validate release version
         id: version
         shell: bash
+        env:
+          RELEASE_BRANCH: ${{ github.ref_name }}
         run: |
-          VERSION=$(node -p "require('./package.json').version")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          node --input-type=module <<'NODE'
+          import { readFileSync, appendFileSync } from 'node:fs';
+          import { assertPublishBranch } from './scripts/release-config.mjs';
+          const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
+          const info = assertPublishBranch(version, process.env.RELEASE_BRANCH);
+          appendFileSync(process.env.GITHUB_OUTPUT, `version=${info.version}\ntag=${info.tag}\n`);
+          NODE
 
       - name: Check existing release
         id: existing
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
-          TAG="v${{ steps.version.outputs.version }}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "$TAG already exists; nothing to publish."
+            echo "$RELEASE_TAG already exists; nothing to publish."
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi

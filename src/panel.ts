@@ -36,6 +36,12 @@ import type {
   TaskStatus,
 } from './types';
 import { deliverableLabel } from './deliverables';
+import {
+  assertValidCompletionRule,
+  findMatchingBuiltinNote,
+  type NoteCompletionRule,
+  type NoteMatchCondition,
+} from './noteCompletion';
 import { initLocale, getString } from './utils/locale';
 import {
   prefs,
@@ -184,28 +190,41 @@ function getAPI(): SkillTaskAPI | undefined {
   }
 }
 
-function resolveTaskItem(itemKey: string): any | null {
+function resolveTaskItem(itemKey: string, libraryID?: number): any | null {
   try {
     const Z: any = Zotero as any;
-    const libs = Z?.Libraries?.getAll?.() ?? [];
-    for (const lib of libs) {
-      const item = Z?.Items?.getByLibraryAndKey?.(lib.libraryID, itemKey);
-      if (item && item !== false && item.isRegularItem?.()) return item;
-    }
+    const item = Z?.Items?.getByLibraryAndKey?.(
+      libraryID ?? Z?.Libraries?.userLibraryID,
+      itemKey
+    );
+    if (item && !item.deleted && item.isRegularItem?.()) return item;
   } catch {
     // ignore
   }
   return null;
 }
 
-async function revealTaskItem(itemKey: string): Promise<void> {
-  const item = resolveTaskItem(itemKey);
+async function revealTaskItem(itemKey: string, libraryID?: number): Promise<void> {
+  const item = resolveTaskItem(itemKey, libraryID);
   if (!item) throw new Error(getString('panel-detail-item-missing'));
   const Z: any = Zotero as any;
   const win = Z?.getMainWindow?.();
   const pane = win?.ZoteroPane ?? Z?.getActiveZoteroPane?.();
   if (!pane?.selectItem) throw new Error(getString('panel-detail-library-unavailable'));
   await pane.selectItem(item.id);
+  try { win?.focus?.(); } catch { /* ignore */ }
+}
+
+async function revealCompletionNote(noteKey: string, parent: any): Promise<void> {
+  const Z: any = Zotero as any;
+  const note = Z?.Items?.getByLibraryAndKey?.(parent.libraryID, noteKey);
+  if (!note || note.deleted || !note.isNote?.() || note.parentID !== parent.id) {
+    throw new Error(getString('panel-completion-note-missing'));
+  }
+  const win = Z?.getMainWindow?.();
+  const pane = win?.ZoteroPane ?? Z?.getActiveZoteroPane?.();
+  if (!pane?.selectItem) throw new Error(getString('panel-detail-library-unavailable'));
+  await pane.selectItem(note.id);
   try { win?.focus?.(); } catch { /* ignore */ }
 }
 
@@ -1035,6 +1054,264 @@ function bindFileDropZone(
 }
 
 
+/** Optional rule editor. Preview only reads selected items; it never changes tasks. */
+function completionRuleEditor(
+  initial: NoteCompletionRule | undefined,
+  readScope: () => SkillScope
+): {
+  element: HTMLElement;
+  read: () => NoteCompletionRule | undefined;
+  setAvailable: (available: boolean) => void;
+} {
+  let initialError = '';
+  try {
+    initial = assertValidCompletionRule(initial);
+  } catch (error) {
+    initialError = errMsg(error);
+    initial = undefined;
+  }
+  const section = el('div', 'field');
+  section.append(formLabel(getString('panel-completion-title')));
+  if (initialError) {
+    section.append(el('p', 'err-inline', getString('panel-completion-error', { error: initialError })));
+  }
+  const enabledRow = el('label', 'check-row');
+  const enabled = el('input');
+  enabled.type = 'checkbox';
+  enabled.checked = initial?.enabled === true;
+  enabledRow.append(enabled, el('span', '', getString('panel-completion-enable')));
+  const box = el('div', 'references-box');
+  box.append(el('p', 'hint', getString('panel-completion-hint')));
+  const operatorRow = el('div', 'field-inline');
+  const operator = el('select');
+  operator.setAttribute('aria-label', getString('panel-completion-combine'));
+  for (const [value, label] of [
+    ['all', getString('panel-completion-all')],
+    ['any', getString('panel-completion-any')],
+  ]) {
+    const option = el('option', '', label);
+    option.value = value;
+    operator.append(option);
+  }
+  operator.value = initial?.match?.operator ?? 'all';
+  operatorRow.append(formLabel(getString('panel-completion-combine')), operator);
+  box.append(operatorRow);
+
+  type ConditionRow = { element: HTMLElement; read: () => NoteMatchCondition };
+  const conditions: ConditionRow[] = [];
+  const exclusions: ConditionRow[] = [];
+  const positiveList = el('div');
+  const excludeList = el('div');
+  const previewResult = el('div', 'hint');
+  previewResult.setAttribute('role', 'status');
+  previewResult.setAttribute('aria-live', 'polite');
+  let revision = 0;
+  let available = true;
+  const invalidatePreview = (): void => {
+    revision++;
+    previewResult.replaceChildren();
+  };
+  const addCondition = (
+    list: HTMLElement,
+    rows: ConditionRow[],
+    value?: NoteMatchCondition
+  ): void => {
+    const row = el('div', 'field-inline');
+    row.style.flexWrap = 'wrap';
+    const field = el('select');
+    field.style.minWidth = '100px';
+    field.setAttribute('aria-label', getString('panel-completion-field'));
+    for (const [key, label] of [
+      ['tag', getString('panel-completion-tag')],
+      ['title', getString('panel-completion-note-title')],
+      ['text', getString('panel-completion-text')],
+    ]) {
+      const option = el('option', '', label);
+      option.value = key;
+      field.append(option);
+    }
+    field.value = value?.field ?? 'tag';
+    const comparison = el('select');
+    comparison.style.minWidth = '100px';
+    comparison.setAttribute('aria-label', getString('panel-completion-comparison'));
+    const syncComparison = (): void => {
+      const previous = comparison.value;
+      comparison.replaceChildren();
+      const options = field.value === 'tag'
+        ? [['equals', getString('panel-completion-equals')]]
+        : [
+          ['equals', getString('panel-completion-equals')],
+          ['contains', getString('panel-completion-contains')],
+          ['startsWith', getString('panel-completion-starts-with')],
+        ];
+      for (const [key, label] of options) {
+        const option = el('option', '', label);
+        option.value = key;
+        comparison.append(option);
+      }
+      comparison.value = options.some(([key]) => key === previous) ? previous : 'equals';
+    };
+    syncComparison();
+    if (value) comparison.value = value.operator;
+    field.addEventListener('change', syncComparison);
+    const input = el('input');
+    input.type = 'text';
+    input.style.flex = '1 1 160px';
+    input.style.width = 'auto';
+    input.value = value?.value ?? '';
+    input.placeholder = getString('panel-completion-value');
+    input.setAttribute('aria-label', getString('panel-completion-value'));
+    const entry: ConditionRow = {
+      element: row,
+      read: () => ({
+        field: field.value as NoteMatchCondition['field'],
+        operator: comparison.value as NoteMatchCondition['operator'],
+        value: input.value,
+      }),
+    };
+    const remove = opBtn(getString('panel-action-remove'), () => {
+      rows.splice(rows.indexOf(entry), 1);
+      row.remove();
+      invalidatePreview();
+    }, { icon: 'x', secondary: true });
+    row.append(field, comparison, input, remove);
+    rows.push(entry);
+    list.append(row);
+  };
+  for (const condition of initial?.match?.conditions ?? []) {
+    addCondition(positiveList, conditions, condition);
+  }
+  if (!conditions.length) addCondition(positiveList, conditions);
+  for (const condition of initial?.match?.exclude ?? []) {
+    addCondition(excludeList, exclusions, condition);
+  }
+  box.append(positiveList, opBtn(getString('panel-completion-add-condition'), () => {
+    addCondition(positiveList, conditions);
+    invalidatePreview();
+  }, { icon: 'plus', secondary: true }));
+  box.append(el('p', 'hint', getString('panel-completion-exclude-hint')));
+  box.append(excludeList, opBtn(getString('panel-completion-add-exclusion'), () => {
+    addCondition(excludeList, exclusions);
+    invalidatePreview();
+  }, { icon: 'plus', secondary: true }));
+
+  const contentRow = el('label', 'check-row');
+  const requireContent = el('input');
+  requireContent.type = 'checkbox';
+  requireContent.checked = initial?.match?.requireContent !== false ||
+    (initial?.match?.minContentLength ?? 0) > 0;
+  contentRow.append(requireContent, el('span', '', getString('panel-completion-require-content')));
+  const lengthRow = el('div', 'field-inline');
+  const minLength = el('input');
+  minLength.type = 'number';
+  minLength.min = '1';
+  minLength.max = '1000000';
+  minLength.step = '1';
+  minLength.style.width = '100px';
+  minLength.value = String(Math.max(1, initial?.match?.minContentLength ?? 1));
+  minLength.setAttribute('aria-label', getString('panel-completion-min-length'));
+  lengthRow.append(formLabel(getString('panel-completion-min-length')), minLength);
+  const syncLength = (): void => { minLength.disabled = !requireContent.checked; };
+  requireContent.addEventListener('change', syncLength);
+  syncLength();
+  box.append(contentRow, lengthRow, el('p', 'hint', getString('panel-completion-content-hint')));
+
+  const read = (): NoteCompletionRule | undefined => {
+    const active = available && enabled.checked;
+    // Blank optional rows are left out when disabling; enabled rules remain strict.
+    const readRows = (rows: ConditionRow[]): NoteMatchCondition[] => rows
+      .map(row => row.read())
+      .filter(row => active || row.value.trim());
+    return assertValidCompletionRule({
+      enabled: active,
+      type: 'builtin-note',
+      match: {
+        operator: operator.value,
+        conditions: readRows(conditions),
+        exclude: readRows(exclusions),
+        requireContent: requireContent.checked,
+        minContentLength: requireContent.checked ? Number(minLength.value) : 0,
+      },
+    });
+  };
+  const preview = opBtn(getString('panel-completion-preview'), async () => {
+    previewResult.replaceChildren();
+    try {
+      const rule = read();
+      if (!rule?.enabled) return;
+      const Z: any = Zotero as any;
+      const pane = Z?.getMainWindow?.()?.ZoteroPane ?? Z?.getActiveZoteroPane?.();
+      const selected = (pane?.getSelectedItems?.() ?? []).filter(
+        (item: any) => !item.deleted && item.isRegularItem?.() &&
+          item.libraryID === Z?.Libraries?.userLibraryID
+      );
+      if (!selected.length) {
+        previewResult.textContent = getString('panel-completion-preview-empty');
+        return;
+      }
+      const previewRevision = revision;
+      const scope = readScope();
+      preview.disabled = true;
+      previewResult.append(el('p', '', getString('panel-completion-preview-hint', {
+        n: Math.min(selected.length, 20),
+      })));
+      for (const item of selected.slice(0, 20)) {
+        if (revision !== previewRevision) break;
+        const title = String(item.getField?.('title') || item.key);
+        const row = el('p');
+        row.style.overflowWrap = 'anywhere';
+        const inScope = await api!.skillGroups.matchesScope({ scope }, item);
+        if (!inScope) {
+          if (revision === previewRevision) {
+            row.textContent = getString('panel-completion-preview-outside-scope', { title });
+            previewResult.append(row);
+          }
+          continue;
+        }
+        const result = await findMatchingBuiltinNote(item, rule);
+        if (revision !== previewRevision) break;
+        if (result.status === 'matched') {
+          row.append(document.createTextNode(getString('panel-completion-preview-match', {
+            title, note: result.title || result.noteKey,
+            conditions: result.matchedConditions.map(index => index + 1).join(', '),
+          })));
+          row.append(opBtn(getString('panel-completion-view-note'),
+            () => revealCompletionNote(result.noteKey, item),
+            { icon: 'external-link', secondary: true }));
+        } else {
+          row.textContent = result.status === 'error'
+            ? getString('panel-completion-preview-error', { title, error: result.error })
+            : getString('panel-completion-preview-no-match', { title });
+        }
+        previewResult.append(row);
+      }
+    } catch (error) {
+      previewResult.textContent = getString('panel-completion-error', { error: errMsg(error) });
+    } finally {
+      preview.disabled = false;
+    }
+  }, { icon: 'search', secondary: true });
+  box.append(preview, previewResult);
+  const syncEnabled = (): void => {
+    box.hidden = !enabled.checked;
+    invalidatePreview();
+  };
+  section.addEventListener('input', invalidatePreview);
+  section.addEventListener('change', invalidatePreview);
+  enabled.addEventListener('change', syncEnabled);
+  section.append(enabledRow, box);
+  syncEnabled();
+  return {
+    element: section,
+    read,
+    setAvailable: (value) => {
+      available = value;
+      section.hidden = !value;
+      invalidatePreview();
+    },
+  };
+}
+
 /** 渲染新增/编辑表单（页内表单，不弹窗） */
 function renderForm(wrap: HTMLElement): void {
   if (!api || !formState) {
@@ -1511,6 +1788,15 @@ function renderForm(wrap: HTMLElement): void {
   mdPolicyRow.append(mdPolicy);
   mdOpts.append(rowMdNote, rowMdFile, rowAttachMd, mdFileNameInput, mdPolicyRow);
 
+  const completionEditor = completionRuleEditor(editing?.completionRule, () => ({
+    type: scopeColl.checked ? 'collections' : 'all',
+    collectionKeys: Array.from(
+      collList.querySelectorAll('input[type="checkbox"]:checked')
+    ).filter((input): input is HTMLInputElement => input instanceof HTMLInputElement)
+      .map(input => input.value),
+    includeSubcollections: includeSub.checked,
+  }));
+
   const syncDelOpts = (): void => {
     const v = (
       delField.querySelector(
@@ -1526,6 +1812,7 @@ function renderForm(wrap: HTMLElement): void {
     mdFileNameInput.hidden = !mdToFile;
     mdPolicyRow.hidden = !mdToFile;
     mdPolicy.disabled = !attachMd.checked;
+    completionEditor.setAvailable(v === 'note' || (v === 'markdown' && mdTargetNote.checked));
   };
   for (const r of [delNote, delFile, delMd, mdTargetNote, mdTargetFile]) {
     r.addEventListener('change', syncDelOpts);
@@ -1534,7 +1821,7 @@ function renderForm(wrap: HTMLElement): void {
   attachMd.addEventListener('change', syncDelOpts);
   syncDelOpts();
   delField.append(fileOpts, mdOpts);
-  wrap.append(delField);
+  wrap.append(delField, completionEditor.element);
 
   // —— 保存 / 取消 ——
   const btnRow = el('div', 'ops');
@@ -1648,6 +1935,7 @@ function renderForm(wrap: HTMLElement): void {
           deliverable = { type: 'note' };
         }
         try {
+          const completionRule = completionEditor.read();
           let saved: SkillGroup;
           if (editing) {
             saved = await api!.skillGroups.update(editing.id, {
@@ -1659,6 +1947,7 @@ function renderForm(wrap: HTMLElement): void {
               scope,
               materials,
               deliverable,
+              completionRule,
             });
           } else {
             const data: SkillGroupCreateData = {
@@ -1670,6 +1959,7 @@ function renderForm(wrap: HTMLElement): void {
               scope,
               materials,
               deliverable,
+              completionRule,
             };
             saved = await api!.skillGroups.create(data);
           }
@@ -2171,6 +2461,18 @@ function relTime(ts: number | null | undefined): HTMLElement {
   return s;
 }
 
+function completionOriginLabel(task: Task): string {
+  if (task.completionOrigin === 'existing-note') return getString('panel-completion-origin-note');
+  if (task.completionOrigin === 'existing-attachment') return getString('panel-completion-origin-attachment');
+  return getString('panel-completion-origin-agent');
+}
+
+function completionTimeLabel(task: Task): string {
+  return task.completionOrigin === 'existing-note' || task.completionOrigin === 'existing-attachment'
+    ? getString('panel-completion-recognized-at')
+    : getString('panel-task-completed-label');
+}
+
 /** 单条任务（含展开详情）外层容器：展开按钮 + 多选框 + 任务行 + 详情区 */
 function taskItem(t: Task): HTMLElement {
   const item = el('div', 'task-item');
@@ -2220,8 +2522,11 @@ function taskItem(t: Task): HTMLElement {
   line1.append(relTime(t.createdAt));
   line1.append(el('span', 'muted', ' · ' + getString('panel-task-claimed-label') + ' '));
   line1.append(relTime(t.claimedAt));
-  line1.append(el('span', 'muted', ' · ' + getString('panel-task-completed-label') + ' '));
+  line1.append(el('span', 'muted', ' · ' + completionTimeLabel(t) + ' '));
   line1.append(relTime(t.completedAt));
+  if (t.status === 'done') {
+    line1.append(el('span', 'muted', ' · ' + completionOriginLabel(t)));
+  }
   info.append(line1);
   if (t.lastError) {
     const errLine = el('div', 'err-inline');
@@ -2298,7 +2603,7 @@ function taskDetail(t: Task): HTMLElement {
   const d = el('div', 'task-detail');
   const sg = api?.skillGroups.get(t.skillGroupId);
 
-  const item = resolveTaskItem(t.itemKey);
+  const item = resolveTaskItem(t.itemKey, t.libraryID);
   const itemTitle =
     item?.getField?.('title') || item?.getDisplayTitle?.() || getString('panel-detail-item-untitled');
 
@@ -2311,15 +2616,19 @@ function taskDetail(t: Task): HTMLElement {
   grid.append(
     detailKV(
       getString('panel-detail-submissions'),
-      String(t.submissionCount ?? (t.status === 'done' ? 1 : 0))
+      String(t.submissionCount ?? (t.status === 'done' &&
+        t.completionOrigin !== 'existing-note' && t.completionOrigin !== 'existing-attachment' ? 1 : 0))
     )
   );
+  if (t.status === 'done') {
+    grid.append(detailKV(getString('panel-completion-origin'), completionOriginLabel(t)));
+  }
   d.append(grid);
 
   const itemOps = el('div', 'ops');
   const revealBtn = opBtn(
     getString('panel-detail-view-in-library'),
-    () => revealTaskItem(t.itemKey),
+    () => revealTaskItem(t.itemKey, t.libraryID),
     {
       icon: 'external-link',
       title: getString('panel-detail-view-in-library-title'),
@@ -2328,6 +2637,11 @@ function taskDetail(t: Task): HTMLElement {
   );
   revealBtn.disabled = !item;
   itemOps.append(revealBtn);
+  if (item && t.noteKey) {
+    itemOps.append(opBtn(getString('panel-completion-view-note'),
+      () => revealCompletionNote(t.noteKey!, item),
+      { icon: 'external-link', secondary: true }));
+  }
   d.append(itemOps);
 
   // 领取时的指令快照
@@ -2370,7 +2684,10 @@ function taskDetail(t: Task): HTMLElement {
     if (t.attachmentKey) {
       delGrid.append(detailKV(getString('panel-detail-attachment-key'), t.attachmentKey, true));
     }
-    delGrid.append(detailKV(getString('panel-detail-write-status'), getString('panel-detail-delivered')));
+    delGrid.append(detailKV(getString('panel-detail-write-status'),
+      t.completionOrigin === 'existing-note' || t.completionOrigin === 'existing-attachment'
+        ? getString('panel-completion-recognized')
+        : getString('panel-detail-delivered')));
   } else {
     delGrid.append(detailKV(getString('panel-detail-write-status'), getString('panel-detail-not-delivered')));
   }
@@ -2383,7 +2700,7 @@ function taskDetail(t: Task): HTMLElement {
   const tl = el('ul', 'timeline');
   tl.append(timelineStep(getString('panel-task-created-label'), t.createdAt));
   tl.append(timelineStep(getString('panel-task-claimed-label'), t.claimedAt));
-  tl.append(timelineStep(getString('panel-task-completed-label'), t.completedAt));
+  tl.append(timelineStep(completionTimeLabel(t), t.completedAt));
   tlSec.append(tl);
   d.append(tlSec);
 
@@ -2641,6 +2958,7 @@ async function rescan(skillGroupId: string): Promise<void> {
         waiting: result.waitingMaterial,
         promoted: result.promoted,
         completedExisting: result.completedExisting,
+        completionErrors: result.completionErrors ?? 0,
       });
     await refreshTab('tasks');
     // refreshTab 重建了 DOM，重新定位进度元素以保留结果摘要
@@ -2741,6 +3059,7 @@ async function scanAllGroups(): Promise<void> {
         waitingMaterial: a.waitingMaterial + r.waitingMaterial,
         promoted: a.promoted + r.promoted,
         completedExisting: a.completedExisting + r.completedExisting,
+        completionErrors: a.completionErrors + (r.completionErrors ?? 0),
       }),
       {
         scanned: 0,
@@ -2749,6 +3068,7 @@ async function scanAllGroups(): Promise<void> {
         waitingMaterial: 0,
         promoted: 0,
         completedExisting: 0,
+        completionErrors: 0,
       }
     );
     fill.style.width = '100%';
@@ -2761,6 +3081,7 @@ async function scanAllGroups(): Promise<void> {
         waiting: agg.waitingMaterial,
         promoted: agg.promoted,
         completedExisting: agg.completedExisting,
+        completionErrors: agg.completionErrors,
       });
     await refreshTab(activeTab);
   } catch (e) {
@@ -3176,7 +3497,7 @@ function auditCard(): HTMLElement {
 
   interface AuditEvent {
     ts: number;
-    kind: 'claim' | 'done' | 'fail';
+    kind: 'claim' | 'done' | 'recognized' | 'fail';
     task: Task;
   }
   const events: AuditEvent[] = [];
@@ -3185,7 +3506,9 @@ function auditCard(): HTMLElement {
       events.push({ ts: t.claimedAt, kind: 'claim', task: t });
     }
     if (t.completedAt) {
-      events.push({ ts: t.completedAt, kind: 'done', task: t });
+      events.push({ ts: t.completedAt,
+        kind: t.completionOrigin === 'existing-note' || t.completionOrigin === 'existing-attachment'
+          ? 'recognized' : 'done', task: t });
     }
     if (t.status === 'failed') {
       // 失败事件时间取领取时间（失败发生在领取之后），从未领取则回退创建时间
@@ -3202,6 +3525,7 @@ function auditCard(): HTMLElement {
   const KIND_META = {
     claim: { label: getString('panel-audit-claim'), cls: 'accent', icon: 'zap' },
     done: { label: getString('panel-audit-done'), cls: 'ok', icon: 'check-circle' },
+    recognized: { label: getString('panel-completion-recognized'), cls: 'ok', icon: 'check-circle' },
     fail: { label: getString('panel-audit-fail'), cls: 'danger', icon: 'alert-circle' },
   } as const;
   const list = el('div', 'audit-list');
@@ -3219,7 +3543,7 @@ function auditCard(): HTMLElement {
     info.append(l1);
     const sgName = api!.skillGroups.get(ev.task.skillGroupId)?.name ?? getString('panel-detail-sg-deleted');
     let sub = sgName;
-    if (ev.kind === 'done') {
+    if (ev.kind === 'done' || ev.kind === 'recognized') {
       const t = ev.task;
       const dtype = t.deliverableType ?? (t.noteKey ? 'note' : null);
       if (dtype === 'file' || (dtype === 'markdown' && !t.noteKey)) {

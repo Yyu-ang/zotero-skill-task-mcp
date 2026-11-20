@@ -27,6 +27,8 @@ import {
 import { LIMITS, log, error, truncateForDisplay } from './utils';
 import { traced } from './utils/trace';
 import { assertValidDeliverable } from './deliverables';
+import { assertValidCompletionRule } from './noteCompletion';
+import { supportsNoteCompletion } from './taskCoordinator';
 
 /** 持久化文件名 */
 const FILE_NAME = 'skill-groups.json';
@@ -252,6 +254,10 @@ export class SkillGroupStore implements ISkillGroupStore {
     );
     assertValidScope(data.scope);
     const deliverable = assertValidDeliverable(data.deliverable);
+    const completionRule = assertValidCompletionRule(data.completionRule);
+    if (completionRule?.enabled && !supportsNoteCompletion(deliverable)) {
+      throw new Error('已有笔记完成判定仅支持内建笔记或 Markdown 写入内建笔记');
+    }
 
     const now = Date.now();
     const sg: SkillGroup = {
@@ -267,6 +273,7 @@ export class SkillGroupStore implements ISkillGroupStore {
       scope: clone(data.scope),
       materials: clone(data.materials),
       deliverable,
+      completionRule,
       createdAt: now,
       updatedAt: now,
     };
@@ -281,7 +288,13 @@ export class SkillGroupStore implements ISkillGroupStore {
 
   @traced
   async update(id: string, patch: SkillGroupPatch): Promise<SkillGroup> {
-    const sg = this.findOrThrow(id);
+    // Validate a detached copy so rejected rule edits cannot partially change a live group.
+    const sg = clone(this.findOrThrow(id));
+    const nextDeliverable = assertValidDeliverable(patch.deliverable ?? sg.deliverable);
+    const nextRule = assertValidCompletionRule(patch.completionRule ?? sg.completionRule);
+    if (nextRule?.enabled && !supportsNoteCompletion(nextDeliverable)) {
+      throw new Error('已有笔记完成判定仅支持内建笔记或 Markdown 写入内建笔记');
+    }
 
     // 只允许修改白名单字段，忽略其余字段
     if (patch.name !== undefined) {
@@ -318,11 +331,13 @@ export class SkillGroupStore implements ISkillGroupStore {
       sg.materials = clone(patch.materials);
     }
     if (patch.deliverable !== undefined) {
-      sg.deliverable = assertValidDeliverable(patch.deliverable);
+      sg.deliverable = nextDeliverable;
     }
+    sg.completionRule = nextRule;
 
     sg.version += 1;
     sg.updatedAt = Date.now();
+    this.groups[this.groups.findIndex((group) => group.id === id)] = sg;
     await this.persist();
     return clone(sg);
   }
@@ -515,7 +530,7 @@ export class SkillGroupStore implements ISkillGroupStore {
    * 注意：多集合命中仍只返回一次命中（布尔值），"一个技能组 × 一条目只生成一条任务"
    * 的唯一性由任务生成器保证。
    */
-  async matchesScope(sg: SkillGroup, item: any): Promise<boolean> {
+  async matchesScope(sg: Pick<SkillGroup, 'scope'>, item: any): Promise<boolean> {
     if (!sg || !item) {
       return false;
     }
@@ -613,7 +628,7 @@ export class SkillGroupStore implements ISkillGroupStore {
    * 配置的集合若已被删除（查不到 ID），跳过。
    */
   private expandScopeIDs(
-    sg: SkillGroup,
+    sg: Pick<SkillGroup, 'scope'>,
     item: any,
     keys: string[],
     includeSubcollections: boolean
