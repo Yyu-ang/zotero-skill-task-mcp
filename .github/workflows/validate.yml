@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches:
+      - main
       - 'beta/**'
       - 'fix/network-access-oauth'
 
