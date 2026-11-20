@@ -1054,6 +1054,112 @@ function bindFileDropZone(
 }
 
 
+/** Custom option menu for the rule editor. Native Gecko option popups are not
+ * consistently opaque or mouse-selectable inside Zotero's standalone panel. */
+let activeRuleChoice: (() => void) | null = null;
+let ruleChoiceNumber = 0;
+
+function completionChoice(
+  label: string, initial: Array<[string, string]>, preferred: string
+): {
+  element: HTMLDivElement;
+  readonly value: string;
+  setOptions: (options: Array<[string, string]>, preferred?: string) => void;
+} {
+  const element = el('div', 'completion-choice');
+  const trigger = el('button', 'completion-choice-trigger') as HTMLButtonElement;
+  const popup = el('div', 'completion-choice-popup');
+  trigger.type = 'button';
+  trigger.setAttribute('aria-label', label);
+  trigger.setAttribute('aria-haspopup', 'listbox');
+  trigger.setAttribute('aria-expanded', 'false');
+  popup.id = 'completion-choice-' + (++ruleChoiceNumber);
+  trigger.setAttribute('aria-controls', popup.id);
+  popup.hidden = true;
+  popup.setAttribute('role', 'listbox');
+  popup.setAttribute('aria-label', label);
+  element.append(trigger, popup);
+  let choices = initial;
+  let selected = preferred;
+  let buttons: HTMLButtonElement[] = [];
+  const onOutside = (event: Event): void => {
+    if (!element.contains(event.target as Node)) close();
+  };
+  const close = (): void => {
+    popup.hidden = true;
+    trigger.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('pointerdown', onOutside, true);
+    if (activeRuleChoice === close) activeRuleChoice = null;
+  };
+  const open = (): void => {
+    if (activeRuleChoice && activeRuleChoice !== close) activeRuleChoice();
+    activeRuleChoice = close;
+    popup.hidden = false;
+    trigger.setAttribute('aria-expanded', 'true');
+    document.addEventListener('pointerdown', onOutside, true);
+  };
+  const render = (): void => {
+    if (!choices.some(([key]) => key === selected)) selected = choices[0]?.[0] ?? '';
+    trigger.textContent = choices.find(([key]) => key === selected)?.[1] ?? '';
+    buttons = choices.map(([key, title]) => {
+      const option = el('button', 'completion-choice-option', title) as HTMLButtonElement;
+      option.type = 'button';
+      option.setAttribute('role', 'option');
+      option.setAttribute('aria-selected', String(key === selected));
+      option.addEventListener('click', () => {
+        selected = key;
+        render();
+        close();
+        trigger.focus();
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      return option;
+    });
+    popup.replaceChildren(...buttons);
+  };
+  const focusIndex = (index: number): void => {
+    if (buttons.length) buttons[(index + buttons.length) % buttons.length].focus();
+  };
+  trigger.addEventListener('click', () => popup.hidden ? open() : close());
+  trigger.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    event.preventDefault();
+    open();
+    focusIndex(event.key === 'ArrowDown'
+      ? Math.max(0, choices.findIndex(([key]) => key === selected))
+      : buttons.length - 1);
+  });
+  popup.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      close();
+      trigger.focus();
+      return;
+    }
+    const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      focusIndex((index < 0 ? 0 : index) + (event.key === 'ArrowDown' ? 1 : -1));
+    } else if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault();
+      focusIndex(event.key === 'Home' ? 0 : buttons.length - 1);
+    }
+  });
+  element.addEventListener('focusout', (event) => {
+    if (!element.contains(event.relatedTarget as Node | null)) close();
+  });
+  render();
+  return {
+    element,
+    get value() { return selected; },
+    setOptions(options, preferred) {
+      choices = options;
+      if (preferred !== undefined) selected = preferred;
+      render();
+    },
+  };
+}
+
 /** Optional rule editor. Preview only reads selected items; it never changes tasks. */
 function completionRuleEditor(
   initial: NoteCompletionRule | undefined,
@@ -1083,18 +1189,12 @@ function completionRuleEditor(
   const box = el('div', 'references-box');
   box.append(el('p', 'hint', getString('panel-completion-hint')));
   const operatorRow = el('div', 'field-inline');
-  const operator = el('select');
-  operator.setAttribute('aria-label', getString('panel-completion-combine'));
-  for (const [value, label] of [
+  const operator = completionChoice(getString('panel-completion-combine'), [
     ['all', getString('panel-completion-all')],
     ['any', getString('panel-completion-any')],
-  ]) {
-    const option = el('option', '', label);
-    option.value = value;
-    operator.append(option);
-  }
-  operator.value = initial?.match?.operator ?? 'all';
-  operatorRow.append(formLabel(getString('panel-completion-combine')), operator);
+  ], initial?.match?.operator ?? 'all');
+  operator.element.style.minWidth = '190px';
+  operatorRow.append(formLabel(getString('panel-completion-combine')), operator.element);
   box.append(operatorRow);
 
   type ConditionRow = { element: HTMLElement; read: () => NoteMatchCondition };
@@ -1118,42 +1218,28 @@ function completionRuleEditor(
   ): void => {
     const row = el('div', 'field-inline');
     row.style.flexWrap = 'wrap';
-    const field = el('select');
-    field.style.minWidth = '100px';
-    field.setAttribute('aria-label', getString('panel-completion-field'));
-    for (const [key, label] of [
+    const field = completionChoice(getString('panel-completion-field'), [
       ['tag', getString('panel-completion-tag')],
       ['title', getString('panel-completion-note-title')],
       ['text', getString('panel-completion-text')],
-    ]) {
-      const option = el('option', '', label);
-      option.value = key;
-      field.append(option);
-    }
-    field.value = value?.field ?? 'tag';
-    const comparison = el('select');
-    comparison.style.minWidth = '100px';
-    comparison.setAttribute('aria-label', getString('panel-completion-comparison'));
+    ], value?.field ?? 'tag');
+    const comparison = completionChoice(getString('panel-completion-comparison'), [
+      ['equals', getString('panel-completion-equals')],
+    ], 'equals');
+    const comparisonOptions = (): Array<[string, string]> => field.value === 'tag'
+      ? [['equals', getString('panel-completion-equals')]]
+      : [
+        ['equals', getString('panel-completion-equals')],
+        ['contains', getString('panel-completion-contains')],
+        ['startsWith', getString('panel-completion-starts-with')],
+      ];
     const syncComparison = (): void => {
-      const previous = comparison.value;
-      comparison.replaceChildren();
-      const options = field.value === 'tag'
-        ? [['equals', getString('panel-completion-equals')]]
-        : [
-          ['equals', getString('panel-completion-equals')],
-          ['contains', getString('panel-completion-contains')],
-          ['startsWith', getString('panel-completion-starts-with')],
-        ];
-      for (const [key, label] of options) {
-        const option = el('option', '', label);
-        option.value = key;
-        comparison.append(option);
-      }
-      comparison.value = options.some(([key]) => key === previous) ? previous : 'equals';
+      const options = comparisonOptions();
+      comparison.setOptions(options, options.some(([key]) => key === comparison.value)
+        ? comparison.value : 'equals');
     };
-    syncComparison();
-    if (value) comparison.value = value.operator;
-    field.addEventListener('change', syncComparison);
+    comparison.setOptions(comparisonOptions(), value?.operator ?? 'equals');
+    field.element.addEventListener('change', syncComparison);
     const input = el('input');
     input.type = 'text';
     input.style.flex = '1 1 160px';
@@ -1174,7 +1260,7 @@ function completionRuleEditor(
       row.remove();
       invalidatePreview();
     }, { icon: 'x', secondary: true });
-    row.append(field, comparison, input, remove);
+    row.append(field.element, comparison.element, input, remove);
     rows.push(entry);
     list.append(row);
   };

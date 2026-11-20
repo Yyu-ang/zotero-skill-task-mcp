@@ -11,19 +11,9 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const temp = mkdtempSync(join(tmpdir(), 'skilltask-completion-ui-'));
 try {
   const { window, document } = parseHTML('<!doctype html><html><body><div id="error-box"></div></body></html>');
-  // Linkedom does not implement the browser's select.value setter.
-  const selectPrototype = window.HTMLSelectElement.prototype;
-  const selectValue = Object.getOwnPropertyDescriptor(selectPrototype, 'value');
-  Object.defineProperty(selectPrototype, 'value', {
-    ...selectValue,
-    set(value) {
-      for (const option of this.options) option.removeAttribute('selected');
-      [...this.options].find(option => option.value === value)?.setAttribute('selected', '');
-    },
-  });
   Object.defineProperty(document, 'readyState', { value: 'loading' });
   Object.assign(globalThis, {
-    document, window, DOMParser,
+    document, window, DOMParser, Event: window.Event,
     HTMLInputElement: window.HTMLInputElement,
     Node: window.Node,
   });
@@ -84,6 +74,41 @@ try {
   assert.equal(rule.enabled, true);
   assert.deepEqual(rule.match.conditions, [{ field: 'tag', operator: 'equals', value: 'ready' }]);
   assert.equal(rule.match.minContentLength, 1);
+  // Gecko can display native option popups without a usable background.
+  // All three rule-editor choices must be opaque document buttons and clickable.
+  const html = readFileSync(join(root, 'addon/content/panel.html'), 'utf8');
+  assert.match(html, /\.completion-choice-popup\s*\{[^}]*background:\s*var\(--panel\)/s);
+  assert.match(html, /\.completion-choice-option\s*\{[^}]*background:\s*var\(--panel\)/s);
+  assert.equal(editor.element.querySelectorAll('select').length, 0);
+  const picks = [...editor.element.querySelectorAll('.completion-choice')];
+  assert.equal(picks.length, 3, 'combine, field and comparison use clickable menus');
+  function choose(pick, index) {
+    const trigger = pick.querySelector('.completion-choice-trigger');
+    const popup = pick.querySelector('[role="listbox"]');
+    trigger.click();
+    assert.equal(popup.hidden, false);
+    assert.equal(trigger.getAttribute('aria-expanded'), 'true');
+    const options = [...popup.querySelectorAll('button[role="option"]')];
+    assert.ok(options.length > index);
+    options[index].click();
+    assert.equal(popup.hidden, true);
+    assert.equal(trigger.getAttribute('aria-expanded'), 'false');
+  }
+  choose(picks[1], 1);
+  choose(picks[2], 1);
+  choose(picks[0], 1);
+  assert.deepEqual(editor.read().match.conditions, [{ field: 'title', operator: 'contains', value: 'ready' }]);
+  assert.equal(editor.read().match.operator, 'any');
+  choose(picks[1], 0);
+  choose(picks[0], 0);
+  assert.deepEqual(editor.read().match.conditions, [{ field: 'tag', operator: 'equals', value: 'ready' }]);
+  assert.equal(editor.read().match.operator, 'all');
+  const popup = picks[1].querySelector('[role="listbox"]');
+  picks[1].querySelector('.completion-choice-trigger').click();
+  const escape = new window.Event('keydown', { bubbles: true, cancelable: true });
+  escape.key = 'Escape';
+  popup.dispatchEvent(escape);
+  assert.equal(popup.hidden, true, 'Escape closes option popup');
   const content = editor.element.querySelectorAll('input[type="checkbox"]')[1];
   content.checked = false;
   content.dispatchEvent(new window.Event('change', { bubbles: true }));
