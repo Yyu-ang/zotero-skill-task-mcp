@@ -168,8 +168,16 @@ async function makeHarness({ completionRule = makeRule(), pdf = 'none', delivera
       getByLibraryAndKey: (libraryID, key) => Array.from(items.values()).find((item) => item.libraryID === libraryID && item.key === key),
     },
     Search: class {
-      constructor({ libraryID }) { this.libraryID = libraryID; searchLibraryID = libraryID; }
-      async search() { return Array.from(items.values()).filter((item) => item.isRegularItem() && item.libraryID === this.libraryID && !item.deleted).map((item) => item.id); }
+      constructor() { this.libraryID = undefined; this.conditions = []; }
+      addCondition(field, operator) { this.conditions.push([field, operator]); }
+      async search() {
+        searchLibraryID = this.libraryID;
+        const noChildren = this.conditions.some(([field]) => field === 'noChildren');
+        return Array.from(items.values())
+          .filter((item) => item.libraryID === this.libraryID && !item.deleted)
+          .filter((item) => !noChildren || !item.parentID)
+          .map((item) => item.id);
+      }
     },
     Notifier: {
       registerObserver(observer) { const id = String(nextObserverID++); observers.set(id, observer); return id; },
@@ -221,6 +229,81 @@ async function makeHarness({ completionRule = makeRule(), pdf = 'none', delivera
 
 beforeEach(async () => { harness = await makeHarness(); });
 afterEach(() => { harness.alive = false; harness.generator.unregisterNotifier(); });
+
+
+describe('literature scan counts', () => {
+  test('single scan counts distinct parent literature, not child notes, PDFs or standalone notes', async () => {
+    const h = harness;
+    h.addParent({ id: 200, key: 'PARENT02' });
+    h.addNote();
+    h.items.set(900, {
+      id: 900, key: 'PDF00001', libraryID: 1, parentID: 100, deleted: false,
+      isRegularItem: () => false, isNote: () => false, isAttachment: () => true,
+    });
+    h.items.set(901, {
+      id: 901, key: 'STANDNOTE', libraryID: 1, deleted: false,
+      isRegularItem: () => false, isNote: () => true, isAttachment: () => false,
+    });
+    const states = [];
+    const unique = new Set();
+    const scan = await h.generator.scanSkillGroup(h.group.id, {
+      onProgress: (done, total) => states.push([done, total]),
+      onScannedItem: (libraryID, key) => unique.add(String(libraryID) + ':' + key),
+    });
+    assert.equal(scan.scanned, 2);
+    assert.equal(unique.size, 2);
+    assert.deepEqual(states, [[0, 2], [2, 2]]);
+    assert.equal(h.tasks.list().length, 2);
+    assert.equal(h.searchLibraryID, 1);
+  });
+
+  test('duplicate search IDs cannot multiply literature or task counts', async () => {
+    const h = harness;
+    const OriginalSearch = globalThis.Zotero.Search;
+    globalThis.Zotero.Search = class extends OriginalSearch {
+      async search() {
+        const ids = await super.search();
+        return [...ids, ...ids];
+      }
+    };
+    const scan = await h.generator.scanSkillGroup(h.group.id);
+    assert.equal(scan.scanned, 1);
+    assert.equal(h.tasks.list().length, 1);
+  });
+
+  test('collection-scoped scan counts only matching parent documents', async () => {
+    const h = harness;
+    h.primary.getCollections = () => [101];
+    const other = h.addParent({ id: 200, key: 'PARENT02' });
+    other.getCollections = () => [202];
+    await h.skillGroups.update(h.group.id, {
+      scope: { type: 'collections', collectionKeys: ['101'], includeSubcollections: false },
+    });
+    const states = [];
+    const scan = await h.generator.scanSkillGroup(h.group.id, {
+      onProgress: (done, total) => states.push([done, total]),
+    });
+    assert.equal(scan.scanned, 1);
+    assert.deepEqual(states, [[0, 1], [1, 1]]);
+    assert.deepEqual(h.tasks.list().map(task => task.itemKey), ['PARENT01']);
+  });
+
+  test('scan-all distinguishes unique literature from skill-by-item processing', async () => {
+    const h = harness;
+    h.addParent({ id: 200, key: 'PARENT02' });
+    await h.skillGroups.copy(h.group.id);
+    await h.skillGroups.copy(h.group.id);
+    const unique = new Set();
+    const results = await h.generator.scanAllEnabled({
+      onScannedItem: (libraryID, key) => unique.add(String(libraryID) + ':' + key),
+    });
+    assert.equal(results.length, 3);
+    assert.equal(unique.size, 2);
+    assert.deepEqual(results.map(result => result.scanned), [2, 2, 2]);
+    assert.equal(results.reduce((sum, result) => sum + result.scanned, 0), 6);
+    assert.equal(h.tasks.list().length, 6);
+  });
+});
 
 describe('skill-group rule storage', () => {
   test('save, copy and reload preserve isolated rule configuration', async () => {
