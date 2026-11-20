@@ -43,7 +43,7 @@ vm.runInNewContext(outputFiles[0].text, {
 const { LanMcpListener, LAN_MCP_PORT, parseRequestHeaders } = module.exports;
 
 const parsed = parseRequestHeaders(
-  'POST /skilltask/mcp HTTP/1.1\r\nHost: 192.168.31.156\r\nMCP-Protocol-Version: 2025-06-18'
+  'POST /skilltask/mcp HTTP/1.1\r\nHost: 192.168.1.2\r\nMCP-Protocol-Version: 2025-06-18'
 );
 assert.equal(parsed.method, 'POST');
 assert.equal(parsed.headers['mcp-protocol-version'], '2025-06-18');
@@ -67,7 +67,7 @@ async function request(method, path, data = null) {
   const raw = Buffer.concat([
     Buffer.from([
       method + ' ' + path + ' HTTP/1.1',
-      'Host: 192.168.31.156:23121',
+      'Host: 192.168.1.2:23121',
       'Content-Type: application/json',
       'Content-Length: ' + rawBody.length,
       'MCP-Protocol-Version: 2025-06-18',
