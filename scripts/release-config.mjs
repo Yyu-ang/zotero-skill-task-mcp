@@ -1,4 +1,16 @@
 /** Shared release decisions; publishing must keep prereleases off the stable feed. */
+const WITHDRAWN_VERSIONS = new Set(['0.7.0-beta.1', '0.7.0-beta.2']);
+
+function assertNotWithdrawn(version) {
+  if (WITHDRAWN_VERSIONS.has(version)) throw new Error(`Withdrawn prerelease must not be republished: ${version}`);
+}
+
+export function shouldPublish(version, eventName, explicitPrerelease = false) {
+  assertNotWithdrawn(version);
+  const info = releaseInfo(version);
+  return !info.prerelease || (eventName === 'workflow_dispatch' && explicitPrerelease === true);
+}
+
 export function releaseInfo(version) {
   if (typeof version !== 'string' || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/.test(version)) {
     throw new Error('Release version must be major.minor.patch with an optional prerelease suffix');
@@ -11,6 +23,7 @@ export function releaseInfo(version) {
 }
 
 export function assertPublishBranch(version, branch) {
+  assertNotWithdrawn(version);
   const info = releaseInfo(version);
   if (typeof branch !== 'string' || !branch.trim()) {
     throw new Error('Publishing requires an identified source branch');
@@ -22,6 +35,7 @@ export function assertPublishBranch(version, branch) {
 }
 
 export function releaseArguments({ version, targetSha, assets, notesFile }) {
+  assertNotWithdrawn(version);
   const info = releaseInfo(version);
   if (typeof targetSha !== 'string' || !/^[a-f0-9]{40}$/i.test(targetSha)) {
     throw new Error('Release target must be an exact 40-character commit SHA');

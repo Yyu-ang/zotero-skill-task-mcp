@@ -8,13 +8,14 @@ text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",s
 <line x1="24" y1="82" x2="1176" y2="82" stroke="#dfe3e8" stroke-width="2"/>
 <text x="150" y="72" class="s " fill="#6b7280">技能组</text><text x="395" y="72" class="s " fill="#6b7280">任务</text><text x="640" y="72" class="s b" fill="#2563eb">MCP 服务</text><rect x="620" y="79" width="90" height="3" rx="2" class="blue"/><text x="885" y="72" class="s " fill="#6b7280">设置</text>
 
-<rect x="24" y="105" width="1152" height="365" rx="10" class="card"/><text x="50" y="140" class="b">MCP 服务</text><rect x="145" y="121" width="84" height="26" rx="13" fill="#e7f7ec"/><text x="164" y="139" class="sm" fill="#16a34a">正在运行</text>
-<text x="50" y="182" class="sm m">服务开关</text><rect x="140" y="163" width="42" height="22" rx="11" class="green"/><text x="195" y="181" class="s">已启用</text>
-<text x="50" y="225" class="sm m">主机</text><rect x="140" y="204" width="990" height="34" rx="6" class="soft"/><text x="155" y="226" class="s">127.0.0.1</text>
-<text x="50" y="270" class="sm m">服务端点</text><rect x="140" y="248" width="850" height="36" rx="6" class="soft"/><text x="155" y="271" class="s">http://127.0.0.1:23119/skilltask/mcp</text>
-<rect x="50" y="305" width="1080" height="52" rx="8" fill="#fbf1e7"/><text x="68" y="337" class="sm" fill="#b45309">当前端点仅通过 Zotero loopback Connector Server 提供，不直接暴露到局域网。</text>
-<text x="50" y="397" class="sm m">访问凭据</text><rect x="140" y="378" width="42" height="22" rx="11" fill="#dfe3e8"/><text x="195" y="396" class="s">已关闭</text>
-<text x="50" y="438" class="sm m">支持 MCP 2026-07-28、2025-11-25、2025-06-18、2025-03-26、2024-11-05</text>
+<rect x="24" y="105" width="1152" height="365" rx="10" class="card"/><text x="50" y="140" class="b">MCP 服务</text><rect x="145" y="121" width="118" height="26" rx="13" fill="#e7f7ec"/><text x="161" y="139" class="sm" fill="#16a34a">仅本机回环</text>
+<text x="50" y="182" class="sm m">服务开关</text><rect x="180" y="163" width="42" height="22" rx="11" class="green"/><text x="235" y="181" class="s">已启用</text>
+<text x="50" y="222" class="sm m">允许远程访问</text><rect x="180" y="203" width="42" height="22" rx="11" fill="#dfe3e8"/><text x="235" y="221" class="s">关闭</text>
+<text x="50" y="262" class="sm m">启用 OAuth 授权</text><rect x="180" y="243" width="42" height="22" rx="11" fill="#dfe3e8"/><text x="235" y="261" class="s">关闭</text>
+<text x="50" y="306" class="sm m">外网公开地址</text><rect x="180" y="284" width="820" height="34" rx="6" class="soft"/><text x="195" y="306" class="s m">https://mcp.example.com</text><rect x="1015" y="284" width="90" height="34" rx="6" class="blue"/><text x="1045" y="306" class="s" style="fill:#fff">保存</text>
+<text x="50" y="351" class="sm m">本机地址</text><rect x="180" y="329" width="925" height="34" rx="6" class="soft"/><text x="195" y="351" class="s">http://127.0.0.1:23123/skilltask/mcp</text>
+<text x="50" y="396" class="sm m">允许远程访问：23123 局域网免鉴权。两个选项同时开启：增加 23124 外网 OAuth。</text>
+<text x="50" y="426" class="sm m">仅开启 OAuth 或都关闭：仅本机回环。外网 HTTPS 代理指向 23124，授权需在 Zotero 本机确认。</text>
 <rect x="24" y="490" width="1152" height="245" rx="10" class="card"/><text x="50" y="525" class="b">最近领取 / 提交记录</text>
 <text x="55" y="570" class="green">✓</text><text x="85" y="570" class="s">完成　DEMO0001</text><text x="310" y="570" class="sm m">结构化摘要助手 · summary.md · attachment ATTACH01</text><text x="1080" y="570" class="sm m">2 分钟前</text>
 <line x1="50" y1="592" x2="1130" y2="592" stroke="#dfe3e8"/><text x="55" y="625" class="blue">↯</text><text x="85" y="625" class="s">领取　DEMO0002</text><text x="310" y="625" class="sm m">结构化摘要助手 · lease 至 18:42</text><text x="1080" y="625" class="sm m">5 分钟前</text>

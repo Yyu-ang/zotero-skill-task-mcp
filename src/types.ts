@@ -462,31 +462,34 @@ export interface ITaskGenerator {
 
 /** MCP 服务（模块 D 实现 src/mcpServer.ts，`implements IMcpServer`） */
 export interface IMcpServer {
-  register(): void;
-  unregister(): void;
+  register(): Promise<void>;
+  unregister(): Promise<void>;
   isEnabled(): boolean;
-  setEnabled(v: boolean): void;
-  /** 返回现有 token；没有则生成并持久化 */
-  ensureToken(): string;
-  regenerateToken(): string;
-  /** 访问凭据是否启用（可选项，默认关闭） */
-  isTokenEnabled(): boolean;
-  setTokenEnabled(v: boolean): void;
+  setEnabled(v: boolean): Promise<void>;
+  /** Both options default to false; OAuth alone never opens a remote listener. */
+  setNetworkOptions(options: {
+    allowRemote: boolean;
+    oauthEnabled: boolean;
+    oauthPublicOrigin: string;
+  }): Promise<void>;
+  revokeOAuthAuthorizations(): void;
   getStatus(): {
     enabled: boolean;
-    /** Zotero Connector Server 固定为 loopback 主机 */
     host: string;
     path: string;
-    /** Zotero 内建服务器实际监听端口；null 表示未知 */
     port: number | null;
-    /** 完整 MCP endpoint；端口未知时为 null */
     url: string | null;
-    /** 当前是否有独立的局域网 MCP 监听 */
+    allowRemote: boolean;
+    oauthEnabled: boolean;
+    oauthPublicOrigin: string;
+    mode: 'loopback' | 'lan' | 'internet' | 'stopped';
     lanAccessible: boolean;
-    /** 独立局域网监听端口；未启动时为 null */
     lanPort: number | null;
-    /** 可复制的端点模板，将 <LAN-IP> 替换为本机 IP */
     lanUrl: string | null;
+    oauthAccessible: boolean;
+    oauthPort: number | null;
+    oauthUrl: string | null;
+    networkError: string | null;
   };
 }
 

@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - 'beta/**'
     paths:
       - package.json
       - package-lock.json
@@ -14,6 +13,12 @@ on:
       - docs/releases/**
       - .github/workflows/release.yml
   workflow_dispatch:
+    inputs:
+      publish_prerelease:
+        description: Explicitly publish a new prerelease after review
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -44,17 +49,21 @@ jobs:
         shell: bash
         env:
           RELEASE_BRANCH: ${{ github.ref_name }}
+          RELEASE_EVENT: ${{ github.event_name }}
+          PUBLISH_PRERELEASE: ${{ inputs.publish_prerelease }}
         run: |
           node --input-type=module <<'NODE'
           import { readFileSync, appendFileSync } from 'node:fs';
-          import { assertPublishBranch } from './scripts/release-config.mjs';
+          import { assertPublishBranch, shouldPublish } from './scripts/release-config.mjs';
           const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
           const info = assertPublishBranch(version, process.env.RELEASE_BRANCH);
-          appendFileSync(process.env.GITHUB_OUTPUT, `version=${info.version}\ntag=${info.tag}\n`);
+          const publish = shouldPublish(version, process.env.RELEASE_EVENT, process.env.PUBLISH_PRERELEASE === 'true');
+          appendFileSync(process.env.GITHUB_OUTPUT, `version=${info.version}\ntag=${info.tag}\npublish=${publish}\n`);
           NODE
 
       - name: Check existing release
         id: existing
+        if: steps.version.outputs.publish == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -68,15 +77,15 @@ jobs:
           fi
 
       - name: Typecheck
-        if: steps.existing.outputs.exists != 'true'
+        if: steps.version.outputs.publish == 'true' && steps.existing.outputs.exists != 'true'
         run: npm run typecheck
 
       - name: Test
-        if: steps.existing.outputs.exists != 'true'
+        if: steps.version.outputs.publish == 'true' && steps.existing.outputs.exists != 'true'
         run: npm test
 
       - name: Build and publish release
-        if: steps.existing.outputs.exists != 'true'
+        if: steps.version.outputs.publish == 'true' && steps.existing.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/release.mjs --publish

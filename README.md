@@ -44,7 +44,7 @@
     </td>
     <td width="50%">
       <img src="docs/images/mcp-service.svg" alt="MCP 服务状态">
-      <br><strong>MCP 服务</strong>：查看本机端点、访问凭据与最近领取/提交记录。
+      <br><strong>MCP 服务</strong>：设置远程访问、OAuth 授权与服务地址，查看最近领取/提交记录。
     </td>
   </tr>
 </table>
@@ -178,30 +178,28 @@ result.json
 
 ## MCP
 
-在插件的 **MCP 服务** 模块可以：
+插件使用两个独立端口：**23123 为本机／局域网入口，23124 为外网 OAuth 入口**。Zotero 自身的 `23119` 保持原样；插件不再注册该端口上的 MCP 路由，也不监听 `23121`。
 
-- 启用 / 关闭 MCP
-- 查看 MCP 地址和端口
-- 复制服务地址
-- 启用 / 关闭访问凭据
-- 查看、复制和重新生成访问凭据
+在 **MCP 服务** 中设置“允许远程访问”和“启用 OAuth 授权”：
 
-同时提供两个 MCP 端点（Zotero 必须正在运行）：
+| 允许远程访问 | 启用 OAuth 授权 | 实际行为 |
+|---|---|---|
+| 关闭 | 关闭 | 仅 `127.0.0.1:23123`，无需鉴权 |
+| 关闭 | 开启 | 仍仅 `127.0.0.1:23123`，无需鉴权 |
+| 开启 | 关闭 | `23123` 本机／局域网，无需鉴权；`23124` 关闭 |
+| 开启 | 开启 | `23123` 本机／局域网免鉴权，同时开启 `23124` 外网 OAuth |
 
-- 本机 Zotero Connector：`http://127.0.0.1:23119/skilltask/mcp`（端口随 Zotero 设置变化）
-- 新增独立局域网监听：`http://<Zotero主机局域网IP>:23121/skilltask/mcp`
+两个选项默认关闭，旧版访问凭据设置不会自动开启远程访问。MCP 总开关关闭时，两个插件端口均关闭。
 
-例如在 Zotero 主机 `192.168.31.156`、客户端 5090D 上：
+- 本机：`http://127.0.0.1:23123/skilltask/mcp`
+- 局域网：`http://<LAN-IP>:23123/skilltask/mcp`，将 `<LAN-IP>` 替换为 Zotero 主机的私网 IP。
+- 外网：配置 HTTPS 公开地址，例如 `https://mcp.example.com`，将其 HTTPS 代理或隧道指向 `http://127.0.0.1:23124`，客户端使用 `https://mcp.example.com/skilltask/mcp`。
 
-```powershell
-Test-NetConnection 192.168.31.156 -Port 23121
-pi mcp add zotero-taskskill --url "http://192.168.31.156:23121/skilltask/mcp"
-pi mcp list
-```
+外网入口使用授权码与 S256 PKCE；客户端首次授权必须由 Zotero 本机确认，所有来自 `23124` 的 MCP 请求均需有效访问令牌，包括本机代理转发的请求。局域网入口拒绝公共 IP 来源和浏览器跨站请求，不提供其他 Zotero 接口。**只将外网代理指向 `23124`；不要公开免鉴权的 `23123`。**
 
-局域网监听借鉴 [cookjohn/zotero-mcp](https://github.com/cookjohn/zotero-mcp) 的 `nsIServerSocket` 模式，使用 `socket.init(23121, false, -1)` 绑定所有网络接口，不改变 Zotero Connector 的监听方式。MCP 开关同时控制本机端点和局域网端点；关闭或卸载插件时关闭额外 socket。若 `23121` 被占用，本机端点仍然可用，局域网状态会显示不可用。Windows 防火墙需允许该端口的入站 TCP 流量。
+更改访问模式、公开地址、撤销授权或重启 Zotero 后，客户端需要重新授权。端口冲突不会自动换端口，界面显示实际监听状态和错误。
 
-局域网地址不会自动侦测；插件面板显示 `<LAN-IP>` 占位符，使用时替换为 Zotero 主机 IP。访问凭据依旧由原 MCP 设置控制，默认关闭。
+详细配置、OAuth 路径和验证方法见 [网络访问与 OAuth](docs/network-access.md)。
 
 当前同时兼容：
 

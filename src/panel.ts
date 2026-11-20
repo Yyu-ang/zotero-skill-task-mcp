@@ -9,7 +9,7 @@
  * （tab-settings）的偏好设置读写不经过 SkillTaskAPI，而是经 prefs.ts
  *（Zotero.Prefs 直读写，框架对照结论第 7 条）；面板不调用 hooks。
  *
- * 四个选项卡：技能组（CRUD）/ 任务（按技能组分组的各状态明细）/ MCP 服务（开关+状态+token）/ 设置（偏好设置读写）。
+ * 四个选项卡：技能组（CRUD）/ 任务（按技能组分组的各状态明细）/ MCP 服务（远程访问、OAuth 与监听状态）/ 设置（偏好设置读写）。
  * 所有异步操作均 try/catch 并在面板顶部显示本地化错误提示（getString）。
  * 静态 HTML 文案在 init() 经 applyStaticI18n() 本地化。
  *
@@ -3394,179 +3394,116 @@ function renderSettings(): void {
 
 // ══════════════════════════ MCP 服务选项卡 ══════════════════════════
 
-/** 渲染 MCP 服务选项卡 */
+/** Render actual listener state, independent from the saved switch positions. */
 function renderMcp(): void {
-  if (!api) {
-    return;
-  }
+  if (!api) return;
   const root = $<HTMLElement>('tab-mcp');
   root.replaceChildren();
   const mcp = api.mcp;
-
-  let enabled = false;
-  let host = '127.0.0.1';
-  let port: number | null = null;
-  let url: string | null = null;
-  let lanAccessible = false;
-  let lanUrl: string | null = null;
-  let tokenEnabled = false;
-  let token = '';
-  try {
-    const st = mcp.getStatus();
-    enabled = st.enabled;
-    host = st.host;
-    port = st.port;
-    url = st.url;
-    lanAccessible = st.lanAccessible;
-    lanUrl = st.lanUrl;
-    tokenEnabled = !!mcp.isTokenEnabled?.();
-    token = tokenEnabled ? mcp.ensureToken() : '';
-  } catch (e) {
+  let status: ReturnType<typeof mcp.getStatus>;
+  try { status = mcp.getStatus(); }
+  catch (e) {
     showError(getString('panel-err-mcp-status-failed', { error: errMsg(e) }));
     return;
   }
-
   const card = el('div', 'card');
   const head = el('div', 'card-head');
-  const sgIcon = el('span', 'sg-ic');
-  sgIcon.innerHTML = iconSVG('server', 'ic');
-  head.append(sgIcon);
-  head.append(el('h3', '', getString('panel-mcp-title')));
-  const stBadge = el('span', `badge ${enabled ? 'ok' : 'muted'}`);
-  stBadge.append(iconEl(enabled ? 'zap' : 'power', 'ic ic-sm'));
-  stBadge.append(document.createTextNode(getString(enabled ? 'panel-mcp-running' : 'panel-mcp-stopped')));
-  head.append(stBadge);
+  head.append(iconEl('server', 'ic'), el('h3', '', getString('panel-mcp-title')));
+  const modeLabels = {
+    stopped: getString('panel-network-mode-stopped'),
+    loopback: getString('panel-network-mode-loopback'),
+    lan: getString('panel-network-mode-lan'),
+    internet: getString('panel-network-mode-internet'),
+  };
+  head.append(el('span', `badge ${status.mode !== 'stopped' ? 'ok' : 'muted'}`, modeLabels[status.mode]));
   card.append(head);
 
-  // 启用开关
-  const toggleRow = el('div', 'mcp-row');
-  toggleRow.append(el('span', 'k', getString('panel-mcp-switch')));
-  const toggle = el('input');
-  toggle.type = 'checkbox';
-  toggle.className = 'switch';
-  toggle.checked = enabled;
-  toggle.title = getString(enabled ? 'panel-mcp-disable-title' : 'panel-mcp-enable-title');
-  toggle.setAttribute('aria-label', getString('panel-mcp-switch-aria'));
-  toggle.addEventListener('change', () => {
-    void setMcpEnabled(toggle.checked);
-  });
-  toggleRow.append(toggle);
-  toggleRow.append(el('span', '', getString(enabled ? 'panel-mcp-enabled' : 'panel-mcp-disabled')));
-  card.append(toggleRow);
-
-  // 主机与实际监听端口
-  const hostRow = el('div', 'mcp-row');
-  hostRow.append(el('span', 'k', getString('panel-mcp-host')));
-  hostRow.append(el('div', 'url-box', host));
-  card.append(hostRow);
-
-  const portRow = el('div', 'mcp-row');
-  portRow.append(el('span', 'k', getString('panel-mcp-port')));
-  portRow.append(el('div', 'url-box', port !== null ? String(port) : '—'));
-  card.append(portRow);
-
-  // 服务端点（一键复制）
-  const urlRow = el('div', 'mcp-row');
-  urlRow.append(el('span', 'k', getString('panel-mcp-endpoint')));
-  if (url) {
-    const urlBox = el('div', 'url-box', url);
-    urlBox.title = getString('panel-mcp-endpoint-title');
-    urlRow.append(urlBox);
-    urlRow.append(
-      opBtn(getString('panel-action-copy'), (b) => copyText(url!, b), { icon: 'copy', title: getString('panel-mcp-copy-endpoint-title') })
-    );
-  } else {
-    urlRow.append(el('span', 'muted', getString('panel-mcp-port-unknown')));
-  }
-  card.append(urlRow);
-
-  if (lanAccessible && lanUrl) {
-    const lanRow = el('div', 'mcp-row');
-    lanRow.append(el('span', 'k', 'LAN MCP'));
-    const lanBox = el('div', 'url-box', lanUrl);
-    lanBox.title = 'Replace <LAN-IP> with this computer\'s LAN address';
-    lanRow.append(lanBox);
-    lanRow.append(
-      opBtn(getString('panel-action-copy'), (b) => copyText(lanUrl!, b),
-        { icon: 'copy', title: 'Copy LAN MCP endpoint template' })
-    );
-    card.append(lanRow);
-    card.append(el('div', 'hint', 'LAN listener: 0.0.0.0. Replace <LAN-IP> with your Zotero host LAN address.'));
-  }
-  if (!lanAccessible) {
-    const localOnly = el('div', 'notice');
-    localOnly.append(iconEl('alert-circle', 'ic'));
-    localOnly.append(document.createTextNode(getString('panel-mcp-local-only')));
-    card.append(localOnly);
+  function switchRow(id: string, label: string, checked: boolean): HTMLInputElement {
+    const row = el('div', 'mcp-row');
+    const text = el('label', 'k', label);
+    text.htmlFor = id;
+    const input = el('input');
+    input.id = id;
+    input.type = 'checkbox';
+    input.className = 'switch';
+    input.checked = checked;
+    input.setAttribute('aria-label', label);
+    row.append(text, input);
+    card.append(row);
+    return input;
   }
 
-  // 访问凭据开关：原独立设置页配置合并到 MCP 模块。
-  const tokenToggleRow = el('div', 'mcp-row');
-  tokenToggleRow.append(el('span', 'k', getString('panel-mcp-token-switch')));
-  const tokenToggle = el('input');
-  tokenToggle.type = 'checkbox';
-  tokenToggle.className = 'switch';
-  tokenToggle.checked = tokenEnabled;
-  tokenToggle.setAttribute('aria-label', getString('panel-mcp-token-switch'));
-  tokenToggle.addEventListener('change', () => {
+  const enabled = switchRow('mcp-service-enabled', getString('panel-mcp-switch'), status.enabled);
+  enabled.addEventListener('change', () => { void setMcpEnabled(enabled.checked); });
+  const remote = switchRow('mcp-allow-remote', getString('panel-network-allow-remote'), status.allowRemote);
+  const oauth = switchRow('mcp-oauth-enabled', getString('panel-network-oauth-enabled'), status.oauthEnabled);
+  card.append(el('div', 'hint', getString('panel-network-switch-hint')));
+
+  const originRow = el('div', 'mcp-row network-origin-row');
+  const originLabel = el('label', 'k', getString('panel-network-public-origin'));
+  originLabel.htmlFor = 'mcp-oauth-origin';
+  const origin = el('input');
+  origin.id = 'mcp-oauth-origin';
+  origin.type = 'url';
+  origin.value = status.oauthPublicOrigin;
+  origin.placeholder = 'https://mcp.example.com';
+  origin.autocomplete = 'off';
+  const save = opBtn(getString('panel-action-save'), () => { void saveNetwork(); }, { icon: 'check' });
+  originRow.append(originLabel, origin, save);
+  card.append(originRow);
+  card.append(el('div', 'hint', getString('panel-network-origin-hint')));
+
+  let saving = false;
+  async function saveNetwork(): Promise<void> {
+    if (saving) return;
+    saving = true;
+    clearError();
+    for (const input of [enabled, remote, oauth, origin, save]) input.disabled = true;
     try {
-      mcp.setTokenEnabled(tokenToggle.checked);
+      await mcp.setNetworkOptions({
+        allowRemote: remote.checked, oauthEnabled: oauth.checked, oauthPublicOrigin: origin.value,
+      });
       renderMcp();
     } catch (e) {
-      showError(getString('panel-err-mcp-token-toggle-failed', { error: errMsg(e) }));
-    }
-  });
-  tokenToggleRow.append(tokenToggle);
-  tokenToggleRow.append(
-    el(
-      'span',
-      '',
-      getString(tokenEnabled ? 'panel-mcp-token-enabled' : 'panel-mcp-token-disabled-short')
-    )
-  );
-  card.append(tokenToggleRow);
-
-  // token：默认关闭，仅在用户显式启用访问凭据后生成/展示。
-  const tokenRow = el('div', 'mcp-row');
-  tokenRow.append(el('span', 'k', getString('panel-mcp-token')));
-  if (tokenEnabled) {
-    const tokenBox = el('div', 'token-box', token);
-    tokenBox.title = getString('panel-mcp-token-title');
-    tokenRow.append(tokenBox);
-    tokenRow.append(
-      opBtn(getString('panel-action-copy'), (b) => copyText(token, b), {
-        icon: 'copy',
-        title: getString('panel-mcp-copy-token-title'),
-        secondary: true,
-      })
-    );
-    tokenRow.append(
-      opBtn(getString('panel-action-regen'), () => regenerateToken(), {
-        icon: 'key',
-        title: getString('panel-mcp-regen-title'),
-        secondary: true,
-      })
-    );
-  } else {
-    tokenRow.append(el('span', 'muted', getString('panel-mcp-token-disabled')));
+      renderMcp();
+      showError(getString('panel-network-save-error', { error: errMsg(e) }));
+    } finally { saving = false; }
   }
-  card.append(tokenRow);
-  card.append(
-    el('div', 'hint', getString(tokenEnabled ? 'panel-mcp-token-hint' : 'panel-mcp-token-disabled-hint'))
-  );
+  remote.addEventListener('change', () => { void saveNetwork(); });
+  oauth.addEventListener('change', () => { void saveNetwork(); });
+  origin.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); void saveNetwork(); }
+  });
 
-  // 关闭时的明确提示
-  const notice = el('div', 'notice');
-  notice.append(iconEl('alert-circle', 'ic'));
-  notice.append(
-    document.createTextNode(getString('panel-mcp-stopped-notice'))
-  );
+  function addressRow(label: string, address: string | null): void {
+    if (!address) return;
+    const row = el('div', 'mcp-row');
+    row.append(el('span', 'k', label), el('div', 'url-box', address));
+    row.append(opBtn(getString('panel-action-copy'), (button) => copyText(address, button),
+      { icon: 'copy', title: getString('panel-mcp-copy-endpoint-title') }));
+    card.append(row);
+  }
+  if (status.enabled) addressRow(getString('panel-network-local-url'), status.url);
+  if (status.lanAccessible) addressRow(getString('panel-network-lan-url'), status.lanUrl);
+  if (status.oauthAccessible) {
+    addressRow(getString('panel-network-oauth-url'), status.oauthUrl);
+    card.append(el('div', 'hint', getString('panel-network-oauth-port')));
+    const revokeRow = el('div', 'mcp-row');
+    const result = el('span', 'muted');
+    result.setAttribute('role', 'status');
+    revokeRow.append(opBtn(getString('panel-network-revoke'), () => {
+      if (!window.confirm(getString('panel-network-revoke-confirm'))) return;
+      mcp.revokeOAuthAuthorizations();
+      result.textContent = getString('panel-network-revoked');
+    }, { icon: 'key', secondary: true }), result);
+    card.append(revokeRow);
+  }
+  if (status.networkError) card.append(el('div', 'notice', status.networkError));
+  const notice = el('div', 'notice', getString('panel-mcp-stopped-notice'));
   notice.id = 'mcp-stopped-notice';
-  notice.hidden = enabled;
+  notice.hidden = status.enabled;
   card.append(notice);
-
-  root.append(card);
-  root.append(auditCard());
+  root.append(card, auditCard());
 }
 
 /** 领取/提交记录卡片：从任务的 claimedAt/completedAt/attempts/lastError/noteKey
@@ -3659,8 +3596,10 @@ async function setMcpEnabled(v: boolean): Promise<void> {
     return;
   }
   clearError();
+  const toggle = document.getElementById('mcp-service-enabled') as HTMLInputElement | null;
+  if (toggle) toggle.disabled = true;
   try {
-    api.mcp.setEnabled(v);
+    await api.mcp.setEnabled(v);
     renderMcp();
     if (!v) {
       // 关闭时明确提示"已停止监听"
@@ -3670,26 +3609,8 @@ async function setMcpEnabled(v: boolean): Promise<void> {
       }
     }
   } catch (e) {
-    showError(getString('panel-err-mcp-toggle-failed', { error: errMsg(e) }));
-  }
-}
-
-/** 重新生成 token（操作前 confirm） */
-async function regenerateToken(): Promise<void> {
-  if (!api) {
-    return;
-  }
-  clearError();
-  if (
-    !window.confirm(getString('panel-confirm-regen-token'))
-  ) {
-    return;
-  }
-  try {
-    api.mcp.regenerateToken();
     renderMcp();
-  } catch (e) {
-    showError(getString('panel-err-regen-token-failed', { error: errMsg(e) }));
+    showError(getString('panel-err-mcp-toggle-failed', { error: errMsg(e) }));
   }
 }
 

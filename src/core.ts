@@ -94,10 +94,10 @@ export class PluginCore {
         version: this.version,
       });
       generator.registerNotifier();
-      // 端点注册由 MCP 开关统一管理：启用时注册（setEnabled 幂等），
-      // 停用时不注册/注销，无残留监听；handler 层的启用门禁同时保留作纵深防御
+      // The MCP switch owns the two independent plugin sockets. Startup errors
+      // leave the management UI available so the user can correct the settings.
       if (mcp.isEnabled()) {
-        mcp.register();
+        await mcp.register();
       }
       this.api = { skillGroups, tasks, generator, mcp, version: this.version };
       // 面板（panel.js）经 Zotero.SkillTask 访问业务 API
@@ -235,7 +235,7 @@ export class PluginCore {
   /**
    * 插件 shutdown 时调用。清理所有资源，确保插件可安全禁用/卸载。
    */
-  shutdown(_data?: any): void {
+  async shutdown(_data?: any): Promise<void> {
     if (!this.initialized) return;
 
     // 需求4：先置存活标志为 false，长驻回调（notifier/timer/快捷键）
@@ -251,7 +251,7 @@ export class PluginCore {
       // ignore
     }
     try {
-      this.api?.mcp.unregister();
+      await this.api?.mcp.unregister();
     } catch {
       // ignore
     }

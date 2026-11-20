@@ -81,16 +81,15 @@ assert.ok(
   'standalone Zotero Preference Pane must not be registered after settings are merged'
 );
 assert.ok(
-  panelTs.includes('mcp.setTokenEnabled(tokenToggle.checked)') &&
-    panelTs.includes("panel-mcp-token-switch"),
-  'MCP access-token setting must be available in the MCP module'
+  panelTs.includes('mcp.setNetworkOptions(') &&
+    panelTs.includes("panel-network-allow-remote") && panelTs.includes("panel-network-oauth-enabled"),
+  'MCP network and OAuth settings must be available in the MCP module'
 );
 
 assert.ok(
-  mcpTs.includes('Z?.Server?.port') &&
-    mcpTs.includes("Z?.Prefs?.get?.('httpServer.port')") &&
-    !mcpTs.includes("Prefs?.get?.('httpServer.port', true)"),
-  'MCP status must report the actual Zotero server port with a correct pref fallback'
+  mcpTs.includes('state.localAccessible ? LAN_MCP_PORT : null') &&
+    !mcpTs.includes('httpServer.port'),
+  'MCP status must report its own live listener and never modify the Connector port'
 );
 
 assert.ok(
@@ -181,9 +180,10 @@ assert.ok(
   'task detail must expose successful submission/revision count'
 );
 assert.ok(
-  mcpTs.includes("prefs.get(PREF_MCP_TOKEN_ENABLED, false)") &&
-    addonPrefs.includes('pref("extensions.zotero-skill-task.mcp.tokenEnabled", false)'),
-  'MCP access-token protection must default to disabled'
+  addonPrefs.includes('pref("extensions.zotero-skill-task.mcp.allowRemote", false)') &&
+    addonPrefs.includes('pref("extensions.zotero-skill-task.mcp.oauthEnabled", false)') &&
+    !mcpTs.includes('Z.Server.Endpoints'),
+  'MCP must default to loopback with both remote options off and leave Connector untouched'
 );
 assert.ok(
   mcpTs.includes("prefs.get(PREF_MCP_ENABLED, true)") &&

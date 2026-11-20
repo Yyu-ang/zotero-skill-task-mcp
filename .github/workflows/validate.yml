@@ -4,8 +4,8 @@ on:
   pull_request:
   push:
     branches:
-      - feature/mcp-lan-listener-23121
       - 'beta/**'
+      - 'fix/network-access-oauth'
 
 jobs:
   validate:

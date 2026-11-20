@@ -73,9 +73,18 @@ async function startup({ id, version, rootURI }, reason) {
   try { ctx.TextEncoder = TextEncoder; } catch {}
   try { ctx.TextDecoder = TextDecoder; } catch {}
   try { ctx.URL = URL; } catch {}
+  try { ctx.URLSearchParams = URLSearchParams; } catch {}
   try { ctx.atob = atob; } catch {}
   try { ctx.btoa = btoa; } catch {}
   try { ctx.crypto = crypto; } catch {}
+  // Bootstrap globals vary by Gecko version; use the privileged window's
+  // Web Crypto when needed. Never fall back to pseudo-random credentials.
+  if (!ctx.crypto) {
+    try { ctx.crypto = Zotero.getMainWindow().crypto; } catch {}
+  }
+  if (!ctx.crypto) {
+    try { ctx.crypto = Services.appShell.hiddenDOMWindow.crypto; } catch {}
+  }
   try { ctx.setTimeout = setTimeout; } catch {}
   try { ctx.clearTimeout = clearTimeout; } catch {}
   try { ctx.setInterval = setInterval; } catch {}
@@ -128,14 +137,14 @@ async function onMainWindowUnload({ window }, reason) {
   }
 }
 
-function shutdown(data, reason) {
+async function shutdown(data, reason) {
   if (reason === APP_SHUTDOWN) {
     return;
   }
   try {
     const inst = Zotero['zotero-skill-task'];
     if (inst && inst.hooks && typeof inst.hooks.onShutdown === 'function') {
-      inst.hooks.onShutdown(data, reason);
+      await inst.hooks.onShutdown(data, reason);
     }
   } catch (e) {
     // ignore
