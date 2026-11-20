@@ -1,26 +1,20 @@
 /**
  * src/mcpServer.ts — 模块 D：MCP 服务（FR-06 / FR-07 / FR-08 + 需求 §8 安全）
  *
- * 按 docs/TECH_VALIDATION_MCP_HTTP.md 方案 A 实现：
- * 复用 Zotero 进程内 Connector Server，注册端点 /skilltask/mcp，
+ * 独立监听 23123（本机/局域网）与 23124（外网 OAuth），
+ * 不修改 Zotero Connector 的 23119 或任何系统网络偏好。
  * 同一 HTTP 端点双栈支持 MCP 2025-11-25（legacy stateless）与 2026-07-28（modern stateless）；
  * 不提供 SSE/服务端主动消息。
  *
  * 安全（需求 §8）：
  * - 默认启用：pref `extensions.zotero-skill-task.mcp.enabled` 默认为 true；
  *   用户关闭后 handler 层强制返回 503。
- * - Bearer 鉴权：token 存 pref `extensions.zotero-skill-task.mcp.token`，
- *   逐字节常量时间比较，缺失/错误返回 401。日志绝不输出 token。
+ * - 本机/局域网入口免鉴权；外网 23124 独立执行 OAuth，不能用请求头降级。
+ * - 两个远程选项默认关闭；OAuth 凭据仅保存在内存，切换模式与重启均失效。
  * - 只返回技能组配置允许的材料（metadata / abstract / notes / pdf 开关）。
  * - 提交的笔记 HTML 在写入前做清理（按数据处理，不执行脚本）。
  *
- * 客户端注意事项（技术文档 §2.4 / §3）：
- * - MCP 客户端请求不要带 `Origin` 头；
- * - `User-Agent` 不要以 `Mozilla/` 开头；
- * 否则会被 Zotero 内建的 CSRF guard 在到达本端点之前直接丢弃。
- *
- * 技术文档 §3 坑 #2：Zotero 9+ 要求端点 `init` 必须是 async，
- * 同步 init 返回数组会导致请求永远挂起。
+ * 局域网入口拒绝浏览器跨站 Origin 与公共来源；公网入口使用固定 HTTPS issuer。
  */
 
 import type {
@@ -36,9 +30,13 @@ import type {
   Task,
 } from './types';
 import { DATA_DIR_NAME } from './types';
+import { assertValidCompletionRule, findMatchingBuiltinNote, NOTE_COMPLETION_RULE_SCHEMA } from './noteCompletion';
+import { existingNoteResult, supportsNoteCompletion, taskLibraryID, withTaskLock } from './taskCoordinator';
 import { resolveEarliestPdfPath } from './taskGenerator';
-import { prefs, getLeaseMs } from './prefs';
-import { LanMcpListener, LAN_MCP_PORT, LAN_MCP_PATH } from './lanMcpListener';
+import { prefs, getLeaseMs, getDeliverableMaxBytes } from './prefs';
+import { NetworkAccess } from './networkAccess';
+import { LAN_MCP_PORT, OAUTH_MCP_PORT } from './lanMcpListener';
+import { OAuthServer, normalizeOAuthOrigin, type HttpRequest, type HttpResponse } from './oauthServer';
 import { LIMITS, error as logError, log, truncateForDisplay } from './utils';
 import { traced } from './utils/trace';
 import {
@@ -57,15 +55,15 @@ import {
 declare const DOMParser: any;
 declare const TextEncoder: any;
 
-/** MCP 端点路径（技术文档 §2.1 方案 A） */
+/** Shared MCP route on the two isolated listeners. */
 const MCP_PATH = '/skilltask/mcp';
 const MCP_HOST = '127.0.0.1';
 /** MCP 服务开关（addon/prefs.js 中默认 true） */
 const PREF_MCP_ENABLED = 'extensions.zotero-skill-task.mcp.enabled';
-/** Bearer token 存储键（由 ensureToken 生成/持久化） */
-const PREF_MCP_TOKEN = 'extensions.zotero-skill-task.mcp.token';
-/** 访问凭据开关（默认关闭；用户可显式启用） */
-const PREF_MCP_TOKEN_ENABLED = 'extensions.zotero-skill-task.mcp.tokenEnabled';
+/** Independent opt-in flags: an old static token never grants remote access. */
+const PREF_ALLOW_REMOTE = 'extensions.zotero-skill-task.mcp.allowRemote';
+const PREF_OAUTH_ENABLED = 'extensions.zotero-skill-task.mcp.oauthEnabled';
+const PREF_OAUTH_ORIGIN = 'extensions.zotero-skill-task.mcp.oauthPublicOrigin';
 /** 双协议：旧客户端继续 initialize；新客户端按请求携带 2026 envelope。 */
 const MCP_LEGACY_PROTOCOL_VERSIONS = [
   '2025-11-25',
@@ -96,52 +94,7 @@ const ERR_METHOD_NOT_FOUND = -32601;
 const ERR_INVALID_PARAMS = -32602;
 const ERR_INTERNAL = -32603;
 
-/** 32 字节随机 hex（token 用） */
-function randomHex(bytes: number): string {
-  const buf = new Uint8Array(bytes);
-  if (
-    typeof crypto !== 'undefined' &&
-    typeof crypto.getRandomValues === 'function'
-  ) {
-    crypto.getRandomValues(buf);
-  } else {
-    for (let i = 0; i < buf.length; i++) {
-      buf[i] = Math.floor(Math.random() * 256);
-    }
-  }
-  return Array.from(buf)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-/**
- * 常量时间字符串比较（逐字节异或累加，不提前返回）。
- * 长度不同也逐字节参与比较，避免泄露长度信息。
- */
-function timingSafeEqual(a: string, b: string): boolean {
-  const enc = new TextEncoder();
-  const ab = enc.encode(a);
-  const bb = enc.encode(b);
-  let diff = ab.length === bb.length ? 0 : 1;
-  const maxLen = Math.max(ab.length, bb.length);
-  for (let i = 0; i < maxLen; i++) {
-    const x = i < ab.length ? ab[i] : 0;
-    const y = i < bb.length ? bb[i] : 0;
-    diff |= x ^ y;
-  }
-  return diff === 0;
-}
-
-/** 从请求头提取 Bearer token（大小写不敏感的 header 键都尝试） */
-function extractBearer(headers: any): string {
-  if (!headers) return '';
-  const raw =
-    headers['authorization'] ?? headers['Authorization'] ?? '';
-  const m = String(raw).match(/^Bearer\s+(.+)$/i);
-  return m ? m[1].trim() : '';
-}
-
-/** Zotero Server 的 header 容器在不同版本可能是 plain object / Map-like。 */
+/** Header names are case-insensitive; accept plain objects and Map-like containers. */
 function getHeader(headers: any, name: string): string {
   if (!headers) return '';
   try {
@@ -314,47 +267,46 @@ function collectChildNotes(
   return out;
 }
 
-/** 探测 Connector Server 端口（取不到为 null，绝不写回 pref） */
-function detectServerPort(): number | null {
-  const Z = zoteroGlobal();
-  // 优先读取 Zotero.Server 实际监听端口，而不是只看配置 pref。
-  // server.js 暴露的 port getter 返回 HttpServer.identity.primaryPort。
-  try {
-    const actual = Number(Z?.Server?.port);
-    if (Number.isInteger(actual) && actual > 0 && actual <= 65535) {
-      return actual;
-    }
-  } catch {
-    // Server 尚未初始化时 port getter 会抛错，继续读配置值。
-  }
-  try {
-    // httpServer.port 是 Zotero 自身 pref，不能传 global=true；
-    // 否则会错误读取名为 "httpServer.port" 的绝对 pref。
-    const configured = Number(Z?.Prefs?.get?.('httpServer.port'));
-    return Number.isInteger(configured) && configured > 0 && configured <= 65535
-      ? configured
-      : null;
-  } catch {
-    return null;
-  }
-}
-
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** MCP 服务：Zotero.Server 端点 + JSON-RPC 分发 + 领取/提交业务 */
+/** MCP service: isolated sockets, JSON-RPC dispatch, task claim and submission. */
 export class McpServer implements IMcpServer {
   private skillGroups: ISkillGroupStore;
   private tasks: ITaskStore;
   private generator: ITaskGenerator;
   private version: string;
-  /** 端点是否已注册到 Zotero.Server（注册/注销幂等的依据） */
-  private registered = false;
-  /** Separate LAN listener; never modifies Zotero Connector's loopback socket. */
-  private readonly lanListener = new LanMcpListener((data, headers) =>
-    this.handleRequest({ data, headers })
-  );
+  private networkError: string | null = null;
+  private disposed = false;
+  private oauthRevision = 0;
+  private transitions: Promise<void> = Promise.resolve();
+  private readonly oauth = new OAuthServer({
+    getPublicOrigin: () => String(prefs.get(PREF_OAUTH_ORIGIN, '')),
+    requestApproval: async ({ clientName, redirectUri, scope }) => {
+      const g = globalThis as any;
+      const prompt = g.Services?.prompt;
+      const win = zoteroGlobal()?.getMainWindow?.();
+      const constants = g.Ci?.nsIPromptService;
+      if (!prompt || !win || !constants) return false;
+      const flags = constants.BUTTON_POS_0 * constants.BUTTON_TITLE_IS_STRING
+        + constants.BUTTON_POS_1 * constants.BUTTON_TITLE_CANCEL
+        + constants.BUTTON_POS_1_DEFAULT;
+      return prompt.confirmEx(win, 'Skill Task MCP — OAuth 授权',
+        `客户端自报名称：${clientName}\n回调域名：${new URL(redirectUri).origin}\n回调地址：${truncateForDisplay(redirectUri, 300)}\n权限：${scope}\n\n允许此客户端读取文献及附件材料、创建或修改技能组、领取和管理任务，并将笔记或文件写入文库吗？`,
+        flags, '允许本次授权', null, null, null, { value: false }) === 0;
+    },
+  });
+  private readonly network = new NetworkAccess({
+    handleLan: async (request) => {
+      if (!this.isEnabled()) return this.httpError(503, 'mcp-disabled');
+      const [status, mime, body] = await this.handleRequest({ data: request.body, headers: request.headers });
+      return { status, headers: { 'Content-Type': mime }, body };
+    },
+    handleOAuth: (request) => this.handleOAuthHttp(request),
+    preflightOAuth: (request) => this.preflightOAuth(request),
+    maxBodyBytes: () => Math.ceil(getDeliverableMaxBytes() * 4 / 3) + 1024 * 1024,
+  });
 
   constructor(deps: {
     skillGroups: ISkillGroupStore;
@@ -370,165 +322,182 @@ export class McpServer implements IMcpServer {
 
   // ──────────── IMcpServer ────────────
 
-  /**
-   * 注册端点到 Zotero.Server.Endpoints。
-   * 幂等：重复调用直接返回，不重复注册。
-   */
-  register(): void {
-    if (this.registered) {
-      return;
-    }
-    const Z = zoteroGlobal();
-    if (!Z?.Server?.Endpoints) {
-      logError('McpServer.register: Zotero.Server.Endpoints 不可用');
-      return;
-    }
-    const self = this;
-    function McpEndpoint(this: any) {
-      // 构造器：Zotero 端点注册约定
-    }
-    McpEndpoint.prototype = {
-      supportedMethods: ['POST'],
-      supportedDataTypes: ['application/json'],
-      permitBookmarklet: false,
-      // 技术文档 §3 坑 #2：init 必须是 async，否则请求挂起
-      init: async function (requestData: any) {
-        return self.handleRequest(requestData);
-      },
-    };
-    Z.Server.Endpoints[MCP_PATH] = McpEndpoint;
-    this.registered = true;
-    log('MCP endpoint registered:', MCP_PATH);
-    try {
-      this.lanListener.start();
-      log(`MCP LAN endpoint listening on 0.0.0.0:${LAN_MCP_PORT}${LAN_MCP_PATH}`);
-    } catch (e) {
-      logError(`MCP LAN listener failed to start on port ${LAN_MCP_PORT}: ${errMsg(e)}`);
-    }
+  private enqueueTransition(action: () => Promise<void>): Promise<void> {
+    const next = this.transitions.then(action);
+    this.transitions = next.catch(() => {});
+    return next;
   }
 
-  /**
-   * 注销端点（幂等）。不持有 socket，删除注册即无残留监听。
-   */
-  unregister(): void {
-    this.registered = false;
-    this.lanListener.stop();
+  private requireLiveInstance(): void {
+    if (this.disposed) throw new Error('插件实例已停用，请重新启用插件并打开面板');
+  }
+
+  private allowRemote(): boolean { return prefs.get(PREF_ALLOW_REMOTE, false) === true; }
+  private oauthEnabled(): boolean { return prefs.get(PREF_OAUTH_ENABLED, false) === true; }
+
+  private async configureNetwork(): Promise<void> {
+    this.networkError = null;
     try {
-      const Z = zoteroGlobal();
-      if (Z?.Server?.Endpoints) {
-        delete Z.Server.Endpoints[MCP_PATH];
-        log('MCP endpoint unregistered:', MCP_PATH);
+      if (this.isEnabled() && this.allowRemote() && this.oauthEnabled()) {
+        if (!normalizeOAuthOrigin(String(prefs.get(PREF_OAUTH_ORIGIN, '')))) {
+          throw new Error('启用外网 OAuth 前，请填写有效的 HTTPS 公开地址');
+        }
+        const c = (globalThis as any).crypto;
+        if (!c?.getRandomValues || !c?.subtle?.digest) throw new Error('安全随机数或 Web Crypto 不可用，OAuth 未启动');
       }
-    } catch {
-      // ignore
+      await this.network.configure({
+        enabled: this.isEnabled(), allowRemote: this.allowRemote(), oauthEnabled: this.oauthEnabled(),
+      });
+    } catch (error) {
+      this.revokeOAuthAuthorizations();
+      try {
+        await this.network.configure({ enabled: this.isEnabled(), allowRemote: false, oauthEnabled: false });
+      } catch { /* A local port conflict is reported without opening another port. */ }
+      this.networkError = errMsg(error);
+      throw error;
     }
   }
 
-  isEnabled(): boolean {
-    return !!prefs.get(PREF_MCP_ENABLED, true);
+  async register(): Promise<void> {
+    this.requireLiveInstance();
+    return this.enqueueTransition(async () => {
+      this.requireLiveInstance();
+      if (!this.isEnabled()) return;
+      // Keep the local management UI usable if a port is occupied or a saved
+      // public URL is invalid; no remote listener may survive the failure.
+      try { await this.configureNetwork(); }
+      catch (error) { logError(`MCP remote access not started: ${errMsg(error)}`); }
+    });
   }
 
-  /**
-   * 启停 MCP 服务（幂等）：
-   * - 启用：写 pref + 注册端点（已注册则跳过，不重复注册）
-   * - 停用：写 pref + 注销端点（无残留监听；handler 层的 503 门禁同时保留作纵深防御）
-   * 注册/注销失败抛中文错（面板侧展示）。
-   */
-  setEnabled(v: boolean): void {
-    const changed = this.isEnabled() !== v;
-    try {
-      prefs.set(PREF_MCP_ENABLED, v);
-    } catch (e) {
-      throw new Error(`MCP 服务开关保存失败：${errMsg(e)}`);
-    }
-    try {
-      if (v) {
-        // 默认启用访问凭据时，启服务前确保 token 已经存在。
-        if (this.isTokenEnabled()) this.ensureToken();
-        this.register();
+  async unregister(): Promise<void> {
+    // A stale panel can retain this API object after add-on shutdown. It must
+    // never be able to reopen either listener on an unloaded plugin instance.
+    this.disposed = true;
+    this.revokeOAuthAuthorizations();
+    return this.enqueueTransition(async () => { await this.network.stop(); });
+  }
+
+  isEnabled(): boolean { return !this.disposed && prefs.get(PREF_MCP_ENABLED, true) === true; }
+
+  async setEnabled(value: boolean): Promise<void> {
+    this.requireLiveInstance();
+    return this.enqueueTransition(async () => {
+      this.requireLiveInstance();
+      prefs.set(PREF_MCP_ENABLED, value);
+      this.revokeOAuthAuthorizations();
+      if (value) {
+        await this.configureNetwork();
       } else {
-        this.unregister();
+        await this.network.stop();
+        this.networkError = null;
       }
-    } catch (e) {
-      throw new Error(`MCP 服务${v ? '启用' : '停用'}失败：${errMsg(e)}`);
-    }
-    if (changed) {
-      log(`MCP service ${v ? 'enabled' : 'disabled'}`);
-    }
+    });
   }
 
-  /**
-   * 返回现有 token；没有则生成（32 字节随机 hex）并持久化。
-   * 持久化失败抛中文错（面板侧展示），不静默返回不可用的 token。
-   */
-  ensureToken(): string {
-    const existing = prefs.get(PREF_MCP_TOKEN, '');
-    if (typeof existing === 'string' && existing.length >= 32) {
-      return existing;
-    }
-    const token = randomHex(32);
-    try {
-      prefs.set(PREF_MCP_TOKEN, token);
-    } catch (e) {
-      throw new Error(`无法生成访问令牌：偏好存储不可用（${errMsg(e)}）`);
-    }
-    return token;
+  async setNetworkOptions(options: {
+    allowRemote: boolean; oauthEnabled: boolean; oauthPublicOrigin: string;
+  }): Promise<void> {
+    this.requireLiveInstance();
+    return this.enqueueTransition(async () => {
+      this.requireLiveInstance();
+      let origin = options.oauthPublicOrigin.trim()
+        ? normalizeOAuthOrigin(options.oauthPublicOrigin) : '';
+      // Turning access off must remain possible even if an unsaved origin field
+      // contains a typo. Keep the previous value while closing that access.
+      const reducingAccess = (this.allowRemote() && !options.allowRemote)
+        || (this.oauthEnabled() && !options.oauthEnabled);
+      if (origin === null && reducingAccess) origin = String(prefs.get(PREF_OAUTH_ORIGIN, ''));
+      if (origin === null) throw new Error('公开地址必须是有效的 HTTPS 地址，不含路径、账号或查询参数');
+      if (options.allowRemote && options.oauthEnabled && !origin) {
+        throw new Error('启用外网 OAuth 前，请填写 HTTPS 公开地址');
+      }
+      // Changing a mode or issuer invalidates pending approvals and every token.
+      this.revokeOAuthAuthorizations();
+      prefs.set(PREF_ALLOW_REMOTE, options.allowRemote);
+      prefs.set(PREF_OAUTH_ENABLED, options.oauthEnabled);
+      prefs.set(PREF_OAUTH_ORIGIN, origin);
+      try { await this.configureNetwork(); }
+      catch (error) {
+        prefs.set(PREF_ALLOW_REMOTE, false);
+        const recovery = this.network.getState().localAccessible
+          ? '已恢复本机访问' : '未能监听，所有远程入口已关闭';
+        throw new Error(`网络设置未生效，${recovery}：${errMsg(error)}`);
+      }
+    });
   }
 
-  /** 重新生成 token（旧 token 立即失效）；持久化失败抛中文错 */
-  regenerateToken(): string {
-    const token = randomHex(32);
-    try {
-      prefs.set(PREF_MCP_TOKEN, token);
-    } catch (e) {
-      throw new Error(`无法重新生成访问令牌：偏好存储不可用（${errMsg(e)}）`);
-    }
-    return token;
+  revokeOAuthAuthorizations(): void {
+    this.oauthRevision++;
+    this.oauth.revokeAll();
   }
 
-  /** 访问凭据是否启用（默认关闭） */
-  isTokenEnabled(): boolean {
-    return !!prefs.get(PREF_MCP_TOKEN_ENABLED, false);
-  }
-
-  /** 设置访问凭据开关 */
-  setTokenEnabled(v: boolean): void {
-    try {
-      prefs.set(PREF_MCP_TOKEN_ENABLED, v);
-      if (v) this.ensureToken();
-    } catch (e) {
-      throw new Error(`访问凭据开关保存失败：${errMsg(e)}`);
-    }
-    log(`MCP token auth ${v ? 'enabled' : 'disabled'}`);
-  }
-
-  /**
-   * 服务状态：绝不抛错（端口探测失败返回 null，由调用方展示为"未知"）。
-   */
-  getStatus(): {
-    enabled: boolean;
-    host: string;
-    path: string;
-    port: number | null;
-    url: string | null;
-    lanAccessible: boolean;
-    lanPort: number | null;
-    lanUrl: string | null;
-  } {
-    const port = detectServerPort();
+  getStatus(): ReturnType<IMcpServer['getStatus']> {
+    const state = this.network.getState();
+    const port = state.localAccessible ? LAN_MCP_PORT : null;
+    const publicOrigin = String(prefs.get(PREF_OAUTH_ORIGIN, ''));
     return {
-      enabled: this.isEnabled(),
-      host: MCP_HOST,
-      path: MCP_PATH,
-      port,
+      enabled: this.isEnabled(), host: MCP_HOST, path: MCP_PATH, port,
       url: port ? `http://${MCP_HOST}:${port}${MCP_PATH}` : null,
-      // Independent nsIServerSocket listens on all interfaces, not Connector.
-      lanAccessible: this.lanListener.isRunning(),
-      lanPort: this.lanListener.isRunning() ? LAN_MCP_PORT : null,
-      lanUrl: this.lanListener.isRunning()
-        ? `http://<LAN-IP>:${LAN_MCP_PORT}${LAN_MCP_PATH}`
-        : null,
+      allowRemote: this.allowRemote(), oauthEnabled: this.oauthEnabled(),
+      oauthPublicOrigin: publicOrigin,
+      mode: state.mode,
+      lanAccessible: state.lanAccessible, lanPort: state.lanPort,
+      lanUrl: state.lanAccessible ? `http://<LAN-IP>:${LAN_MCP_PORT}${MCP_PATH}` : null,
+      oauthAccessible: state.oauthAccessible, oauthPort: state.oauthPort,
+      oauthUrl: state.oauthAccessible ? `${publicOrigin}${MCP_PATH}` : null,
+      networkError: this.networkError ?? state.error,
     };
+  }
+
+  private httpError(status: number, error: string): HttpResponse {
+    return { status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }, body: JSON.stringify({ error }) };
+  }
+
+  private async preflightOAuth(request: HttpRequest): Promise<HttpResponse | null> {
+    if (!this.isEnabled() || !this.allowRemote() || !this.oauthEnabled()) return this.httpError(503, 'oauth-disabled');
+    const origin = normalizeOAuthOrigin(String(prefs.get(PREF_OAUTH_ORIGIN, '')));
+    if (!origin) return this.httpError(503, 'oauth-not-configured');
+    const host = getHeader(request.headers, 'host').toLowerCase();
+    const allowedHosts = [new URL(origin).host.toLowerCase(), `127.0.0.1:${OAUTH_MCP_PORT}`, `localhost:${OAUTH_MCP_PORT}`, `[::1]:${OAUTH_MCP_PORT}`];
+    if (!allowedHosts.includes(host)) return this.httpError(400, 'invalid-host');
+    const browserOrigin = getHeader(request.headers, 'origin');
+    if (browserOrigin && browserOrigin !== origin) return this.httpError(403, 'invalid-origin');
+    const path = request.path.split('?')[0];
+    const getRoutes = ['/.well-known/oauth-authorization-server', '/.well-known/oauth-protected-resource',
+      '/.well-known/oauth-protected-resource/skilltask/mcp', '/oauth/authorize'];
+    const postRoutes = ['/oauth/register', '/oauth/token', '/oauth/revoke'];
+    if (path !== MCP_PATH) {
+      if (!getRoutes.includes(path) && !postRoutes.includes(path)) return this.httpError(404, 'not-found');
+      if (request.method !== (getRoutes.includes(path) ? 'GET' : 'POST')) return this.httpError(405, 'method-not-allowed');
+      if (Number(getHeader(request.headers, 'content-length') || '0') > 8192) return this.httpError(413, 'oauth-request-too-large');
+    }
+    if (path === MCP_PATH) {
+      if (request.method !== 'POST') return this.httpError(405, 'use-post');
+      if (!/^application\/json(?:\s*;|$)/i.test(getHeader(request.headers, 'content-type'))) return this.httpError(415, 'json-required');
+      if (!await this.oauth.authenticate(request.headers)) {
+        const response = this.httpError(401, 'invalid_token');
+        response.headers['WWW-Authenticate'] = `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/skilltask/mcp", scope="skilltask"`;
+        return response;
+      }
+    }
+    return null;
+  }
+
+  private async handleOAuthHttp(request: HttpRequest): Promise<HttpResponse> {
+    // Check again after the body read: disabling OAuth must also reject requests
+    // that were accepted before the option changed.
+    const revision = this.oauthRevision;
+    const denied = await this.preflightOAuth(request);
+    if (denied) return denied;
+    if (revision !== this.oauthRevision || !this.isEnabled() || !this.allowRemote() || !this.oauthEnabled()) {
+      return this.oauth.unauthorized();
+    }
+    if (request.path === MCP_PATH) {
+      const [status, mime, body] = await this.handleRequest({ data: request.body, headers: request.headers });
+      return { status, headers: { 'Content-Type': mime, 'Cache-Control': 'no-store' }, body };
+    }
+    return await this.oauth.handle(request) ?? this.httpError(404, 'not-found');
   }
 
   // ──────────── HTTP handler（安全边界强制层） ────────────
@@ -548,21 +517,10 @@ export class McpServer implements IMcpServer {
         JSON.stringify({ error: 'mcp-disabled' }),
       ];
     }
-    // ② Bearer 鉴权（可选项）：仅在启用访问凭据时校验；关闭时跳过
-    if (this.isTokenEnabled()) {
-      const expected = String(prefs.get(PREF_MCP_TOKEN, '') ?? '');
-      const got = extractBearer(requestData?.headers);
-      if (!expected || !timingSafeEqual(got, expected)) {
-        return [
-          401,
-          'application/json',
-          JSON.stringify({ error: 'unauthorized' }),
-        ];
-      }
-    }
+    // Authentication belongs to the accepting socket. Local/LAN requests are
+    // unauthenticated; every request arriving on 23124 has passed OAuth above.
     // ③ JSON-RPC 解析
-    // Zotero.Server 对 application/json 已在进入 endpoint.init() 前执行 JSON.parse，
-    // 因此 requestData.data 通常已经是对象；仅对字符串兜底解析。
+    // Socket adapters pass UTF-8 JSON; internal callers may pass a parsed object.
     let rpc: any;
     try {
       const incoming = requestData?.data;
@@ -1116,6 +1074,7 @@ export class McpServer implements IMcpServer {
                     },
                   },
                   deliverable: deliverableSchema,
+                  completionRule: NOTE_COMPLETION_RULE_SCHEMA,
                   scanNow: { type: 'boolean' },
                 },
                 required: ['name', 'instruction'],
@@ -1165,6 +1124,7 @@ export class McpServer implements IMcpServer {
                     enum: ['note', 'file', 'markdown'],
                   },
                   duplicate: { type: 'boolean' },
+                  completionOrigin: { type: 'string', enum: ['agent', 'existing-note', 'existing-attachment'] },
                   revised: { type: 'boolean' },
                   submissionCount: { type: 'integer' },
                   error: { type: 'string' },
@@ -1499,6 +1459,7 @@ export class McpServer implements IMcpServer {
         scope,
         materials,
         deliverable,
+        completionRule: assertValidCompletionRule(params?.completionRule),
       });
 
       if (
@@ -1583,74 +1544,88 @@ export class McpServer implements IMcpServer {
       // 最早创建优先；时间相同按 id 稳定排序
       .sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1));
 
+    let checkFailed = false;
     for (const p of pendings) {
-      const task = await this.claimTaskById(p.id);
-      if (!task) {
-        continue; // 并发下已被其他领取者拿走，试下一条
-      }
-      const sg = this.skillGroups.get(task.skillGroupId);
-      if (!sg) {
-        // 技能组被硬删除：任务成孤儿，标记失败使其在界面可见（不静默丢弃）
-        await this.tasks
-          .fail(task.id, '技能组不存在，任务无法执行')
-          .catch(() => undefined);
-        continue;
-      }
-      if (sg.archived || !sg.enabled) {
-        // 领取瞬间被停用/归档：放回待领取（不记为失败），继续找下一条
-        await this.requeueTask(task.id);
-        continue;
-      }
-      const materials = await this.buildMaterialPackage(sg, task.itemKey);
-      const skillAssets = await this.skillGroups.getAssetManifest(sg.id);
-      if (sg.referencesEnabled !== true) {
-        skillAssets.references = [];
-      }
-      return {
-        task: {
-          id: task.id,
-          skillGroupId: task.skillGroupId,
-          skillGroupVersion: task.skillGroupVersion,
-          instruction: task.instructionSnapshot,
-          skillDescription: sg.description ?? '',
-          skillAssets,
-          referencesDescription:
-            sg.referencesEnabled === true ? sg.referencesDescription ?? '' : '',
-          itemKey: task.itemKey,
-          leaseExpiresAt: task.leaseExpiresAt ?? Date.now() + getLeaseMs(),
-          // FR-07：领取结果携带交付物 schema，提交时须按此格式
-          deliverable: normalizeDeliverable(sg.deliverable),
-        },
-        materials,
-      };
+      const result = await withTaskLock(p.skillGroupId, p.libraryID, p.itemKey, async (): Promise<ClaimResult | null> => {
+        const pending = this.tasks.get(p.id);
+        if (!pending || pending.status !== 'pending') return null;
+        const sg = this.skillGroups.get(pending.skillGroupId);
+        if (!sg || sg.archived || !sg.enabled) return null;
+        const parent = await this.resolveParentItem(pending.itemKey, pending.libraryID);
+        if (!parent) {
+          await this.tasks.fail(pending.id, 'parent-item-missing');
+          return null;
+        }
+        if (!(await this.skillGroups.matchesScope(sg, parent))) return null;
+        const match = await findMatchingBuiltinNote(parent, sg.completionRule);
+        const current = this.skillGroups.get(sg.id);
+        if (!current || !current.enabled || current.archived || current.version !== sg.version) return null;
+        if (match.status === 'error' || (sg.completionRule?.enabled && !supportsNoteCompletion(sg.deliverable))) {
+          await this.tasks.recordCompletionCheckError(pending.id,
+            match.status === 'error' ? match.error : '已有笔记完成判定仅支持内建笔记交付物');
+          checkFailed = true;
+          return null;
+        }
+        if (match.status === 'matched') {
+          await this.tasks.recognizeExistingNote(pending.id, existingNoteResult(sg, match));
+          return null;
+        }
+        await this.tasks.recordCompletionCheckError(pending.id, null);
+        const task = await this.tasks.claimById(pending.id, getLeaseMs(), {
+          skillGroupVersion: sg.version,
+          instructionSnapshot: sg.instruction,
+          completionRuleSnapshot: sg.completionRule?.enabled ? sg.completionRule : null,
+          deliverableSnapshot: normalizeDeliverable(sg.deliverable),
+        });
+        if (!task) return null;
+        try {
+          const materials = await this.buildMaterialPackage(sg, task.itemKey, task.libraryID);
+          const skillAssets = await this.skillGroups.getAssetManifest(sg.id);
+          if (sg.referencesEnabled !== true) skillAssets.references = [];
+          const stillClaimed = this.tasks.get(task.id);
+          if (!stillClaimed || stillClaimed.status !== 'claimed' ||
+              stillClaimed.leaseExpiresAt === null || stillClaimed.leaseExpiresAt <= Date.now()) return null;
+          const latest = this.skillGroups.get(sg.id);
+          if (!latest || latest.archived || !latest.enabled) {
+            await this.requeueTask(task.id);
+            return null;
+          }
+          return {
+            task: {
+              id: task.id,
+              skillGroupId: task.skillGroupId,
+              skillGroupVersion: task.skillGroupVersion,
+              instruction: task.instructionSnapshot,
+              skillDescription: sg.description ?? '',
+              skillAssets,
+              referencesDescription: sg.referencesEnabled === true ? sg.referencesDescription ?? '' : '',
+              itemKey: task.itemKey,
+              libraryID: taskLibraryID(task.libraryID),
+              leaseExpiresAt: task.leaseExpiresAt ?? Date.now() + getLeaseMs(),
+              deliverable: normalizeDeliverable(sg.deliverable),
+            },
+            materials,
+          };
+        } catch (e) {
+          await this.tasks.fail(task.id, errMsg(e));
+          return null;
+        }
+      });
+      if (result) return result;
     }
-    // FR-06：无任务时返回明确的空队列结果
-    return { task: null, materials: null, message: 'empty-queue' };
+    return { task: null, materials: null, message: checkFailed ? 'completion-check-failed' : 'empty-queue' };
   }
 
   /**
-   * TaskStore 的内部扩展方法（requeue / claimById 不在 ITaskStore 接口内），
+   * TaskStore 的内部放回方法（requeue 不在 ITaskStore 接口内），
    * 这里做结构化调用，避免 mcpServer → taskStore 的类级导入依赖。
    */
   private taskStoreInternal(): {
     requeue?: (taskId: string) => Promise<unknown>;
-    claimById?: (taskId: string, leaseMs: number) => Promise<unknown>;
   } {
     return this.tasks as unknown as {
       requeue?: (taskId: string) => Promise<unknown>;
-      claimById?: (taskId: string, leaseMs: number) => Promise<unknown>;
-    };
-  }
-
-  /** 按 id 领取（内部 claimById 的结构化调用；不支持时记日志不断言） */
-  private async claimTaskById(id: string): Promise<any | null> {
-    const store = this.taskStoreInternal();
-    if (typeof store.claimById !== 'function') {
-      logError('McpServer: 任务存储不支持 claimById，无法领取');
-      return null;
-    }
-    // 注意：必须以 store.claimById(...) 形式调用，保持 this 指向 store
-    return (await store.claimById(id, getLeaseMs())) as any | null;
+      };
   }
 
   /**
@@ -1675,9 +1650,10 @@ export class McpServer implements IMcpServer {
    */
   private async buildMaterialPackage(
     sg: SkillGroup,
-    itemKey: string
+    itemKey: string,
+    libraryID?: number
   ): Promise<MaterialPackage> {
-    const parent = await this.resolveParentItem(itemKey);
+    const parent = await this.resolveParentItem(itemKey, libraryID);
     const pkg: MaterialPackage = {
       itemKey,
       metadata: null,
@@ -1710,24 +1686,15 @@ export class McpServer implements IMcpServer {
   }
 
   /**
-   * 按 itemKey 查找父条目（守卫：遍历全部文库）。
+   * 按任务文库和 itemKey 查找父条目，旧任务缺少文库时使用个人文库。
    * 用 Zotero.Items.getByLibraryAndKey（zotero-types 已核对签名）；
    * 找不到、非父条目或异常时返回 null，调用方按缺失处理。
    */
-  private async resolveParentItem(itemKey: string): Promise<any | null> {
+  private async resolveParentItem(itemKey: string, libraryID?: number): Promise<any | null> {
     try {
       const Z = zoteroGlobal();
-      if (!Z?.Items?.getByLibraryAndKey || !Z?.Libraries?.getAll) {
-        return null;
-      }
-      const libs = Z.Libraries.getAll() as Array<{ libraryID: number }>;
-      for (const lib of libs) {
-        const item = Z.Items.getByLibraryAndKey(lib.libraryID, itemKey);
-        if (item && item !== false && item.isRegularItem?.()) {
-          return item;
-        }
-      }
-      return null;
+      const item = Z?.Items?.getByLibraryAndKey?.(taskLibraryID(libraryID), itemKey);
+      return item && !item.deleted && item.isRegularItem?.() ? item : null;
     } catch {
       return null;
     }
@@ -1748,6 +1715,15 @@ export class McpServer implements IMcpServer {
    */
   @traced
   private async submit(params: any): Promise<SubmitResult> {
+    const taskId = typeof params?.taskId === 'string' ? params.taskId.trim() : '';
+    if (!taskId) return { ok: false, error: 'missing-taskId' };
+    const task = this.tasks.get(taskId);
+    if (!task) return { ok: false, error: 'task-not-found' };
+    return withTaskLock(task.skillGroupId, task.libraryID, task.itemKey,
+      () => this.submitLocked(params));
+  }
+
+  private async submitLocked(params: any): Promise<SubmitResult> {
     const taskId =
       typeof params?.taskId === 'string' ? params.taskId.trim() : '';
     if (!taskId) {
@@ -1771,7 +1747,8 @@ export class McpServer implements IMcpServer {
         noteKey: task.noteKey,
         deliverableType: 'note',
         duplicate: true,
-        submissionCount: Math.max(1, task.submissionCount || 1),
+        submissionCount: task.completionOrigin === 'existing-note' || task.completionOrigin === 'existing-attachment'
+          ? Math.max(0, task.submissionCount || 0) : Math.max(1, task.submissionCount || 1),
       };
     }
 
@@ -1802,13 +1779,13 @@ export class McpServer implements IMcpServer {
       return { ok: false, error: 'skill-group-missing' };
     }
 
-    const deliverable = normalizeDeliverable(sg.deliverable);
+    const deliverable = normalizeDeliverable(task.deliverableSnapshot ?? sg.deliverable);
     const validated = validateSubmitParams(deliverable, params, task.id);
     if (!validated.ok) {
       return { ok: false, error: validated.error };
     }
 
-    const parent = await this.resolveParentItem(task.itemKey);
+    const parent = await this.resolveParentItem(task.itemKey, task.libraryID);
     if (!parent) {
       if (!isRevision) {
         await this.tasks
@@ -1816,6 +1793,33 @@ export class McpServer implements IMcpServer {
           .catch(() => undefined);
       }
       return { ok: false, error: 'parent-item-missing' };
+    }
+
+    if (!isRevision && supportsNoteCompletion(deliverable)) {
+      // Preserve the rule agreed at claim time; old leases without a copy use current config.
+      const rule = task.completionRuleSnapshot === undefined
+        ? sg.completionRule : task.completionRuleSnapshot ?? undefined;
+      const match = await findMatchingBuiltinNote(parent, rule);
+      if (match.status === 'error') {
+        await this.tasks.recordCompletionCheckError(task.id, match.error);
+        return { ok: false, error: `completion-check-failed:${match.error}` };
+      }
+      if (match.status === 'matched') {
+        const completed = await this.tasks.recognizeExistingNote(task.id,
+          existingNoteResult({ ...sg, deliverable, version: task.skillGroupVersion }, match), true);
+        if (!completed) return { ok: false, error: 'task-state-changed' };
+        return this.duplicateResult(completed);
+      }
+    }
+
+    // Reads may take longer than the lease. Do not write using a stale task state.
+    const currentTask = this.tasks.get(task.id);
+    if (!currentTask || currentTask.status !== (isRevision ? 'done' : 'claimed')) {
+      return { ok: false, error: 'task-state-changed' };
+    }
+    if (!isRevision && (currentTask.leaseExpiresAt === null || currentTask.leaseExpiresAt <= Date.now())) {
+      await this.tasks.releaseExpiredLeases();
+      return { ok: false, error: 'lease-expired' };
     }
 
     switch (validated.kind) {
@@ -1862,8 +1866,10 @@ export class McpServer implements IMcpServer {
     const res: SubmitResult = {
       ok: true,
       duplicate: true,
+      completionOrigin: task.completionOrigin ?? 'agent',
       deliverableType: dtype,
-      submissionCount: Math.max(1, task.submissionCount || 1),
+      submissionCount: task.completionOrigin === 'existing-note' || task.completionOrigin === 'existing-attachment'
+          ? Math.max(0, task.submissionCount || 0) : Math.max(1, task.submissionCount || 1),
     };
     if (task.noteKey) {
       res.noteKey = task.noteKey;
@@ -1897,8 +1903,8 @@ export class McpServer implements IMcpServer {
     try {
       let noteKey: string;
       if (revision && task.noteKey) {
-        const existingNote = this.resolveItemByKey(task.noteKey);
-        if (existingNote && existingNote.isNote?.()) {
+        const existingNote = this.resolveItemByKey(task.noteKey, parent.libraryID);
+        if (existingNote && !existingNote.deleted && existingNote.isNote?.() && existingNote.parentID === parent.id) {
           existingNote.setNote(clean);
           await existingNote.saveTx();
           noteKey = task.noteKey;
@@ -1938,17 +1944,10 @@ export class McpServer implements IMcpServer {
     }
   }
 
-  /** 在全部文库中按 key 找条目；用于 revision 原位更新历史笔记/附件。 */
-  private resolveItemByKey(itemKey: string): any | null {
+  /** Keys are unique only within a library. */
+  private resolveItemByKey(itemKey: string, libraryID?: number): any | null {
     try {
-      const Z = zoteroGlobal();
-      if (!Z?.Items?.getByLibraryAndKey || !Z?.Libraries?.getAll) return null;
-      const libs = Z.Libraries.getAll() as Array<{ libraryID: number }>;
-      for (const lib of libs) {
-        const item = Z.Items.getByLibraryAndKey(lib.libraryID, itemKey);
-        if (item && item !== false) return item;
-      }
-      return null;
+      return zoteroGlobal()?.Items?.getByLibraryAndKey?.(taskLibraryID(libraryID), itemKey) || null;
     } catch {
       return null;
     }
@@ -1958,6 +1957,7 @@ export class McpServer implements IMcpServer {
   private async createChildNote(parent: any, html: string): Promise<string> {
     const Z = zoteroGlobal();
     const note = new Z.Item('note');
+    note.libraryID = parent.libraryID;
     note.parentID = parent.id;
     note.setNote(html);
     await note.saveTx();
@@ -2034,7 +2034,8 @@ export class McpServer implements IMcpServer {
         if (revision && task.attachmentKey) {
           const replaced = await this.replaceAttachmentBytes(
             task.attachmentKey,
-            bytes
+            bytes,
+            parent
           );
           if (replaced) {
             attachmentKey = task.attachmentKey;
@@ -2095,11 +2096,13 @@ export class McpServer implements IMcpServer {
   /** revision 时直接覆盖已挂附件的底层文件；成功返回 true。 */
   private async replaceAttachmentBytes(
     attachmentKey: string,
-    bytes: Uint8Array
+    bytes: Uint8Array,
+    parent: any
   ): Promise<boolean> {
     try {
-      const attachment = this.resolveItemByKey(attachmentKey);
-      if (!attachment || !attachment.isAttachment?.()) return false;
+      const attachment = this.resolveItemByKey(attachmentKey, parent.libraryID);
+      if (!attachment || !attachment.isAttachment?.() ||
+          attachment.libraryID !== parent.libraryID || attachment.parentID !== parent.id) return false;
       let absPath = '';
       if (typeof attachment.getFilePathAsync === 'function') {
         absPath = String((await attachment.getFilePathAsync()) ?? '');

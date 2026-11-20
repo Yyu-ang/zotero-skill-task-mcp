@@ -9,7 +9,7 @@
  * （tab-settings）的偏好设置读写不经过 SkillTaskAPI，而是经 prefs.ts
  *（Zotero.Prefs 直读写，框架对照结论第 7 条）；面板不调用 hooks。
  *
- * 四个选项卡：技能组（CRUD）/ 任务（按技能组分组的各状态明细）/ MCP 服务（开关+状态+token）/ 设置（偏好设置读写）。
+ * 四个选项卡：技能组（CRUD）/ 任务（按技能组分组的各状态明细）/ MCP 服务（远程访问、OAuth 与监听状态）/ 设置（偏好设置读写）。
  * 所有异步操作均 try/catch 并在面板顶部显示本地化错误提示（getString）。
  * 静态 HTML 文案在 init() 经 applyStaticI18n() 本地化。
  *
@@ -36,6 +36,12 @@ import type {
   TaskStatus,
 } from './types';
 import { deliverableLabel } from './deliverables';
+import {
+  assertValidCompletionRule,
+  findMatchingBuiltinNote,
+  type NoteCompletionRule,
+  type NoteMatchCondition,
+} from './noteCompletion';
 import { initLocale, getString } from './utils/locale';
 import {
   prefs,
@@ -184,28 +190,41 @@ function getAPI(): SkillTaskAPI | undefined {
   }
 }
 
-function resolveTaskItem(itemKey: string): any | null {
+function resolveTaskItem(itemKey: string, libraryID?: number): any | null {
   try {
     const Z: any = Zotero as any;
-    const libs = Z?.Libraries?.getAll?.() ?? [];
-    for (const lib of libs) {
-      const item = Z?.Items?.getByLibraryAndKey?.(lib.libraryID, itemKey);
-      if (item && item !== false && item.isRegularItem?.()) return item;
-    }
+    const item = Z?.Items?.getByLibraryAndKey?.(
+      libraryID ?? Z?.Libraries?.userLibraryID,
+      itemKey
+    );
+    if (item && !item.deleted && item.isRegularItem?.()) return item;
   } catch {
     // ignore
   }
   return null;
 }
 
-async function revealTaskItem(itemKey: string): Promise<void> {
-  const item = resolveTaskItem(itemKey);
+async function revealTaskItem(itemKey: string, libraryID?: number): Promise<void> {
+  const item = resolveTaskItem(itemKey, libraryID);
   if (!item) throw new Error(getString('panel-detail-item-missing'));
   const Z: any = Zotero as any;
   const win = Z?.getMainWindow?.();
   const pane = win?.ZoteroPane ?? Z?.getActiveZoteroPane?.();
   if (!pane?.selectItem) throw new Error(getString('panel-detail-library-unavailable'));
   await pane.selectItem(item.id);
+  try { win?.focus?.(); } catch { /* ignore */ }
+}
+
+async function revealCompletionNote(noteKey: string, parent: any): Promise<void> {
+  const Z: any = Zotero as any;
+  const note = Z?.Items?.getByLibraryAndKey?.(parent.libraryID, noteKey);
+  if (!note || note.deleted || !note.isNote?.() || note.parentID !== parent.id) {
+    throw new Error(getString('panel-completion-note-missing'));
+  }
+  const win = Z?.getMainWindow?.();
+  const pane = win?.ZoteroPane ?? Z?.getActiveZoteroPane?.();
+  if (!pane?.selectItem) throw new Error(getString('panel-detail-library-unavailable'));
+  await pane.selectItem(note.id);
   try { win?.focus?.(); } catch { /* ignore */ }
 }
 
@@ -1035,6 +1054,350 @@ function bindFileDropZone(
 }
 
 
+/** Custom option menu for the rule editor. Native Gecko option popups are not
+ * consistently opaque or mouse-selectable inside Zotero's standalone panel. */
+let activeRuleChoice: (() => void) | null = null;
+let ruleChoiceNumber = 0;
+
+function completionChoice(
+  label: string, initial: Array<[string, string]>, preferred: string
+): {
+  element: HTMLDivElement;
+  readonly value: string;
+  setOptions: (options: Array<[string, string]>, preferred?: string) => void;
+} {
+  const element = el('div', 'completion-choice');
+  const trigger = el('button', 'completion-choice-trigger') as HTMLButtonElement;
+  const popup = el('div', 'completion-choice-popup');
+  trigger.type = 'button';
+  trigger.setAttribute('aria-label', label);
+  trigger.setAttribute('aria-haspopup', 'listbox');
+  trigger.setAttribute('aria-expanded', 'false');
+  popup.id = 'completion-choice-' + (++ruleChoiceNumber);
+  trigger.setAttribute('aria-controls', popup.id);
+  popup.hidden = true;
+  popup.setAttribute('role', 'listbox');
+  popup.setAttribute('aria-label', label);
+  element.append(trigger, popup);
+  let choices = initial;
+  let selected = preferred;
+  let buttons: HTMLButtonElement[] = [];
+  const onOutside = (event: Event): void => {
+    if (!element.contains(event.target as Node)) close();
+  };
+  const close = (): void => {
+    popup.hidden = true;
+    trigger.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('pointerdown', onOutside, true);
+    if (activeRuleChoice === close) activeRuleChoice = null;
+  };
+  const open = (): void => {
+    if (activeRuleChoice && activeRuleChoice !== close) activeRuleChoice();
+    activeRuleChoice = close;
+    popup.hidden = false;
+    trigger.setAttribute('aria-expanded', 'true');
+    document.addEventListener('pointerdown', onOutside, true);
+  };
+  const render = (): void => {
+    if (!choices.some(([key]) => key === selected)) selected = choices[0]?.[0] ?? '';
+    trigger.textContent = choices.find(([key]) => key === selected)?.[1] ?? '';
+    buttons = choices.map(([key, title]) => {
+      const option = el('button', 'completion-choice-option', title) as HTMLButtonElement;
+      option.type = 'button';
+      option.setAttribute('role', 'option');
+      option.setAttribute('aria-selected', String(key === selected));
+      option.addEventListener('click', () => {
+        selected = key;
+        render();
+        close();
+        trigger.focus();
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      return option;
+    });
+    popup.replaceChildren(...buttons);
+  };
+  const focusIndex = (index: number): void => {
+    if (buttons.length) buttons[(index + buttons.length) % buttons.length].focus();
+  };
+  trigger.addEventListener('click', () => popup.hidden ? open() : close());
+  trigger.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    event.preventDefault();
+    open();
+    focusIndex(event.key === 'ArrowDown'
+      ? Math.max(0, choices.findIndex(([key]) => key === selected))
+      : buttons.length - 1);
+  });
+  popup.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      close();
+      trigger.focus();
+      return;
+    }
+    const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      focusIndex((index < 0 ? 0 : index) + (event.key === 'ArrowDown' ? 1 : -1));
+    } else if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault();
+      focusIndex(event.key === 'Home' ? 0 : buttons.length - 1);
+    }
+  });
+  element.addEventListener('focusout', (event) => {
+    if (!element.contains(event.relatedTarget as Node | null)) close();
+  });
+  render();
+  return {
+    element,
+    get value() { return selected; },
+    setOptions(options, preferred) {
+      choices = options;
+      if (preferred !== undefined) selected = preferred;
+      render();
+    },
+  };
+}
+
+/** Optional rule editor. Preview only reads selected items; it never changes tasks. */
+function completionRuleEditor(
+  initial: NoteCompletionRule | undefined,
+  readScope: () => SkillScope
+): {
+  element: HTMLElement;
+  read: () => NoteCompletionRule | undefined;
+  setAvailable: (available: boolean) => void;
+} {
+  let initialError = '';
+  try {
+    initial = assertValidCompletionRule(initial);
+  } catch (error) {
+    initialError = errMsg(error);
+    initial = undefined;
+  }
+  const section = el('div', 'field');
+  section.append(formLabel(getString('panel-completion-title')));
+  if (initialError) {
+    section.append(el('p', 'err-inline', getString('panel-completion-error', { error: initialError })));
+  }
+  const enabledRow = el('label', 'check-row');
+  const enabled = el('input');
+  enabled.type = 'checkbox';
+  enabled.checked = initial?.enabled === true;
+  enabledRow.append(enabled, el('span', '', getString('panel-completion-enable')));
+  const box = el('div', 'references-box');
+  box.append(el('p', 'hint', getString('panel-completion-hint')));
+  const operatorRow = el('div', 'field-inline');
+  const operator = completionChoice(getString('panel-completion-combine'), [
+    ['all', getString('panel-completion-all')],
+    ['any', getString('panel-completion-any')],
+  ], initial?.match?.operator ?? 'all');
+  operator.element.style.minWidth = '190px';
+  operatorRow.append(formLabel(getString('panel-completion-combine')), operator.element);
+  box.append(operatorRow);
+
+  type ConditionRow = { element: HTMLElement; read: () => NoteMatchCondition };
+  const conditions: ConditionRow[] = [];
+  const exclusions: ConditionRow[] = [];
+  const positiveList = el('div');
+  const excludeList = el('div');
+  const previewResult = el('div', 'hint');
+  previewResult.setAttribute('role', 'status');
+  previewResult.setAttribute('aria-live', 'polite');
+  let revision = 0;
+  let available = true;
+  const invalidatePreview = (): void => {
+    revision++;
+    previewResult.replaceChildren();
+  };
+  const addCondition = (
+    list: HTMLElement,
+    rows: ConditionRow[],
+    value?: NoteMatchCondition
+  ): void => {
+    const row = el('div', 'field-inline');
+    row.style.flexWrap = 'wrap';
+    const field = completionChoice(getString('panel-completion-field'), [
+      ['tag', getString('panel-completion-tag')],
+      ['title', getString('panel-completion-note-title')],
+      ['text', getString('panel-completion-text')],
+    ], value?.field ?? 'tag');
+    const comparison = completionChoice(getString('panel-completion-comparison'), [
+      ['equals', getString('panel-completion-equals')],
+    ], 'equals');
+    const comparisonOptions = (): Array<[string, string]> => field.value === 'tag'
+      ? [['equals', getString('panel-completion-equals')]]
+      : [
+        ['equals', getString('panel-completion-equals')],
+        ['contains', getString('panel-completion-contains')],
+        ['startsWith', getString('panel-completion-starts-with')],
+      ];
+    const syncComparison = (): void => {
+      const options = comparisonOptions();
+      comparison.setOptions(options, options.some(([key]) => key === comparison.value)
+        ? comparison.value : 'equals');
+    };
+    comparison.setOptions(comparisonOptions(), value?.operator ?? 'equals');
+    field.element.addEventListener('change', syncComparison);
+    const input = el('input');
+    input.type = 'text';
+    input.style.flex = '1 1 160px';
+    input.style.width = 'auto';
+    input.value = value?.value ?? '';
+    input.placeholder = getString('panel-completion-value');
+    input.setAttribute('aria-label', getString('panel-completion-value'));
+    const entry: ConditionRow = {
+      element: row,
+      read: () => ({
+        field: field.value as NoteMatchCondition['field'],
+        operator: comparison.value as NoteMatchCondition['operator'],
+        value: input.value,
+      }),
+    };
+    const remove = opBtn(getString('panel-action-remove'), () => {
+      rows.splice(rows.indexOf(entry), 1);
+      row.remove();
+      invalidatePreview();
+    }, { icon: 'x', secondary: true });
+    row.append(field.element, comparison.element, input, remove);
+    rows.push(entry);
+    list.append(row);
+  };
+  for (const condition of initial?.match?.conditions ?? []) {
+    addCondition(positiveList, conditions, condition);
+  }
+  if (!conditions.length) addCondition(positiveList, conditions);
+  for (const condition of initial?.match?.exclude ?? []) {
+    addCondition(excludeList, exclusions, condition);
+  }
+  box.append(positiveList, opBtn(getString('panel-completion-add-condition'), () => {
+    addCondition(positiveList, conditions);
+    invalidatePreview();
+  }, { icon: 'plus', secondary: true }));
+  box.append(el('p', 'hint', getString('panel-completion-exclude-hint')));
+  box.append(excludeList, opBtn(getString('panel-completion-add-exclusion'), () => {
+    addCondition(excludeList, exclusions);
+    invalidatePreview();
+  }, { icon: 'plus', secondary: true }));
+
+  const contentRow = el('label', 'check-row');
+  const requireContent = el('input');
+  requireContent.type = 'checkbox';
+  requireContent.checked = initial?.match?.requireContent !== false ||
+    (initial?.match?.minContentLength ?? 0) > 0;
+  contentRow.append(requireContent, el('span', '', getString('panel-completion-require-content')));
+  const lengthRow = el('div', 'field-inline');
+  const minLength = el('input');
+  minLength.type = 'number';
+  minLength.min = '1';
+  minLength.max = '1000000';
+  minLength.step = '1';
+  minLength.style.width = '100px';
+  minLength.value = String(Math.max(1, initial?.match?.minContentLength ?? 1));
+  minLength.setAttribute('aria-label', getString('panel-completion-min-length'));
+  lengthRow.append(formLabel(getString('panel-completion-min-length')), minLength);
+  const syncLength = (): void => { minLength.disabled = !requireContent.checked; };
+  requireContent.addEventListener('change', syncLength);
+  syncLength();
+  box.append(contentRow, lengthRow, el('p', 'hint', getString('panel-completion-content-hint')));
+
+  const read = (): NoteCompletionRule | undefined => {
+    const active = available && enabled.checked;
+    // Blank optional rows are left out when disabling; enabled rules remain strict.
+    const readRows = (rows: ConditionRow[]): NoteMatchCondition[] => rows
+      .map(row => row.read())
+      .filter(row => active || row.value.trim());
+    return assertValidCompletionRule({
+      enabled: active,
+      type: 'builtin-note',
+      match: {
+        operator: operator.value,
+        conditions: readRows(conditions),
+        exclude: readRows(exclusions),
+        requireContent: requireContent.checked,
+        minContentLength: requireContent.checked ? Number(minLength.value) : 0,
+      },
+    });
+  };
+  const preview = opBtn(getString('panel-completion-preview'), async () => {
+    previewResult.replaceChildren();
+    try {
+      const rule = read();
+      if (!rule?.enabled) return;
+      const Z: any = Zotero as any;
+      const pane = Z?.getMainWindow?.()?.ZoteroPane ?? Z?.getActiveZoteroPane?.();
+      const selected = (pane?.getSelectedItems?.() ?? []).filter(
+        (item: any) => !item.deleted && item.isRegularItem?.() &&
+          item.libraryID === Z?.Libraries?.userLibraryID
+      );
+      if (!selected.length) {
+        previewResult.textContent = getString('panel-completion-preview-empty');
+        return;
+      }
+      const previewRevision = revision;
+      const scope = readScope();
+      preview.disabled = true;
+      previewResult.append(el('p', '', getString('panel-completion-preview-hint', {
+        n: Math.min(selected.length, 20),
+      })));
+      for (const item of selected.slice(0, 20)) {
+        if (revision !== previewRevision) break;
+        const title = String(item.getField?.('title') || item.key);
+        const row = el('p');
+        row.style.overflowWrap = 'anywhere';
+        const inScope = await api!.skillGroups.matchesScope({ scope }, item);
+        if (!inScope) {
+          if (revision === previewRevision) {
+            row.textContent = getString('panel-completion-preview-outside-scope', { title });
+            previewResult.append(row);
+          }
+          continue;
+        }
+        const result = await findMatchingBuiltinNote(item, rule);
+        if (revision !== previewRevision) break;
+        if (result.status === 'matched') {
+          row.append(document.createTextNode(getString('panel-completion-preview-match', {
+            title, note: result.title || result.noteKey,
+            conditions: result.matchedConditions.map(index => index + 1).join(', '),
+          })));
+          row.append(opBtn(getString('panel-completion-view-note'),
+            () => revealCompletionNote(result.noteKey, item),
+            { icon: 'external-link', secondary: true }));
+        } else {
+          row.textContent = result.status === 'error'
+            ? getString('panel-completion-preview-error', { title, error: result.error })
+            : getString('panel-completion-preview-no-match', { title });
+        }
+        previewResult.append(row);
+      }
+    } catch (error) {
+      previewResult.textContent = getString('panel-completion-error', { error: errMsg(error) });
+    } finally {
+      preview.disabled = false;
+    }
+  }, { icon: 'search', secondary: true });
+  box.append(preview, previewResult);
+  const syncEnabled = (): void => {
+    box.hidden = !enabled.checked;
+    invalidatePreview();
+  };
+  section.addEventListener('input', invalidatePreview);
+  section.addEventListener('change', invalidatePreview);
+  enabled.addEventListener('change', syncEnabled);
+  section.append(enabledRow, box);
+  syncEnabled();
+  return {
+    element: section,
+    read,
+    setAvailable: (value) => {
+      available = value;
+      section.hidden = !value;
+      invalidatePreview();
+    },
+  };
+}
+
 /** 渲染新增/编辑表单（页内表单，不弹窗） */
 function renderForm(wrap: HTMLElement): void {
   if (!api || !formState) {
@@ -1511,6 +1874,15 @@ function renderForm(wrap: HTMLElement): void {
   mdPolicyRow.append(mdPolicy);
   mdOpts.append(rowMdNote, rowMdFile, rowAttachMd, mdFileNameInput, mdPolicyRow);
 
+  const completionEditor = completionRuleEditor(editing?.completionRule, () => ({
+    type: scopeColl.checked ? 'collections' : 'all',
+    collectionKeys: Array.from(
+      collList.querySelectorAll('input[type="checkbox"]:checked')
+    ).filter((input): input is HTMLInputElement => input instanceof HTMLInputElement)
+      .map(input => input.value),
+    includeSubcollections: includeSub.checked,
+  }));
+
   const syncDelOpts = (): void => {
     const v = (
       delField.querySelector(
@@ -1526,6 +1898,7 @@ function renderForm(wrap: HTMLElement): void {
     mdFileNameInput.hidden = !mdToFile;
     mdPolicyRow.hidden = !mdToFile;
     mdPolicy.disabled = !attachMd.checked;
+    completionEditor.setAvailable(v === 'note' || (v === 'markdown' && mdTargetNote.checked));
   };
   for (const r of [delNote, delFile, delMd, mdTargetNote, mdTargetFile]) {
     r.addEventListener('change', syncDelOpts);
@@ -1534,7 +1907,7 @@ function renderForm(wrap: HTMLElement): void {
   attachMd.addEventListener('change', syncDelOpts);
   syncDelOpts();
   delField.append(fileOpts, mdOpts);
-  wrap.append(delField);
+  wrap.append(delField, completionEditor.element);
 
   // —— 保存 / 取消 ——
   const btnRow = el('div', 'ops');
@@ -1648,6 +2021,7 @@ function renderForm(wrap: HTMLElement): void {
           deliverable = { type: 'note' };
         }
         try {
+          const completionRule = completionEditor.read();
           let saved: SkillGroup;
           if (editing) {
             saved = await api!.skillGroups.update(editing.id, {
@@ -1659,6 +2033,7 @@ function renderForm(wrap: HTMLElement): void {
               scope,
               materials,
               deliverable,
+              completionRule,
             });
           } else {
             const data: SkillGroupCreateData = {
@@ -1670,6 +2045,7 @@ function renderForm(wrap: HTMLElement): void {
               scope,
               materials,
               deliverable,
+              completionRule,
             };
             saved = await api!.skillGroups.create(data);
           }
@@ -2171,6 +2547,18 @@ function relTime(ts: number | null | undefined): HTMLElement {
   return s;
 }
 
+function completionOriginLabel(task: Task): string {
+  if (task.completionOrigin === 'existing-note') return getString('panel-completion-origin-note');
+  if (task.completionOrigin === 'existing-attachment') return getString('panel-completion-origin-attachment');
+  return getString('panel-completion-origin-agent');
+}
+
+function completionTimeLabel(task: Task): string {
+  return task.completionOrigin === 'existing-note' || task.completionOrigin === 'existing-attachment'
+    ? getString('panel-completion-recognized-at')
+    : getString('panel-task-completed-label');
+}
+
 /** 单条任务（含展开详情）外层容器：展开按钮 + 多选框 + 任务行 + 详情区 */
 function taskItem(t: Task): HTMLElement {
   const item = el('div', 'task-item');
@@ -2220,8 +2608,11 @@ function taskItem(t: Task): HTMLElement {
   line1.append(relTime(t.createdAt));
   line1.append(el('span', 'muted', ' · ' + getString('panel-task-claimed-label') + ' '));
   line1.append(relTime(t.claimedAt));
-  line1.append(el('span', 'muted', ' · ' + getString('panel-task-completed-label') + ' '));
+  line1.append(el('span', 'muted', ' · ' + completionTimeLabel(t) + ' '));
   line1.append(relTime(t.completedAt));
+  if (t.status === 'done') {
+    line1.append(el('span', 'muted', ' · ' + completionOriginLabel(t)));
+  }
   info.append(line1);
   if (t.lastError) {
     const errLine = el('div', 'err-inline');
@@ -2298,7 +2689,7 @@ function taskDetail(t: Task): HTMLElement {
   const d = el('div', 'task-detail');
   const sg = api?.skillGroups.get(t.skillGroupId);
 
-  const item = resolveTaskItem(t.itemKey);
+  const item = resolveTaskItem(t.itemKey, t.libraryID);
   const itemTitle =
     item?.getField?.('title') || item?.getDisplayTitle?.() || getString('panel-detail-item-untitled');
 
@@ -2311,15 +2702,19 @@ function taskDetail(t: Task): HTMLElement {
   grid.append(
     detailKV(
       getString('panel-detail-submissions'),
-      String(t.submissionCount ?? (t.status === 'done' ? 1 : 0))
+      String(t.submissionCount ?? (t.status === 'done' &&
+        t.completionOrigin !== 'existing-note' && t.completionOrigin !== 'existing-attachment' ? 1 : 0))
     )
   );
+  if (t.status === 'done') {
+    grid.append(detailKV(getString('panel-completion-origin'), completionOriginLabel(t)));
+  }
   d.append(grid);
 
   const itemOps = el('div', 'ops');
   const revealBtn = opBtn(
     getString('panel-detail-view-in-library'),
-    () => revealTaskItem(t.itemKey),
+    () => revealTaskItem(t.itemKey, t.libraryID),
     {
       icon: 'external-link',
       title: getString('panel-detail-view-in-library-title'),
@@ -2328,6 +2723,11 @@ function taskDetail(t: Task): HTMLElement {
   );
   revealBtn.disabled = !item;
   itemOps.append(revealBtn);
+  if (item && t.noteKey) {
+    itemOps.append(opBtn(getString('panel-completion-view-note'),
+      () => revealCompletionNote(t.noteKey!, item),
+      { icon: 'external-link', secondary: true }));
+  }
   d.append(itemOps);
 
   // 领取时的指令快照
@@ -2370,7 +2770,10 @@ function taskDetail(t: Task): HTMLElement {
     if (t.attachmentKey) {
       delGrid.append(detailKV(getString('panel-detail-attachment-key'), t.attachmentKey, true));
     }
-    delGrid.append(detailKV(getString('panel-detail-write-status'), getString('panel-detail-delivered')));
+    delGrid.append(detailKV(getString('panel-detail-write-status'),
+      t.completionOrigin === 'existing-note' || t.completionOrigin === 'existing-attachment'
+        ? getString('panel-completion-recognized')
+        : getString('panel-detail-delivered')));
   } else {
     delGrid.append(detailKV(getString('panel-detail-write-status'), getString('panel-detail-not-delivered')));
   }
@@ -2383,7 +2786,7 @@ function taskDetail(t: Task): HTMLElement {
   const tl = el('ul', 'timeline');
   tl.append(timelineStep(getString('panel-task-created-label'), t.createdAt));
   tl.append(timelineStep(getString('panel-task-claimed-label'), t.claimedAt));
-  tl.append(timelineStep(getString('panel-task-completed-label'), t.completedAt));
+  tl.append(timelineStep(completionTimeLabel(t), t.completedAt));
   tlSec.append(tl);
   d.append(tlSec);
 
@@ -2641,6 +3044,7 @@ async function rescan(skillGroupId: string): Promise<void> {
         waiting: result.waitingMaterial,
         promoted: result.promoted,
         completedExisting: result.completedExisting,
+        completionErrors: result.completionErrors ?? 0,
       });
     await refreshTab('tasks');
     // refreshTab 重建了 DOM，重新定位进度元素以保留结果摘要
@@ -2741,6 +3145,7 @@ async function scanAllGroups(): Promise<void> {
         waitingMaterial: a.waitingMaterial + r.waitingMaterial,
         promoted: a.promoted + r.promoted,
         completedExisting: a.completedExisting + r.completedExisting,
+        completionErrors: a.completionErrors + (r.completionErrors ?? 0),
       }),
       {
         scanned: 0,
@@ -2749,6 +3154,7 @@ async function scanAllGroups(): Promise<void> {
         waitingMaterial: 0,
         promoted: 0,
         completedExisting: 0,
+        completionErrors: 0,
       }
     );
     fill.style.width = '100%';
@@ -2761,6 +3167,7 @@ async function scanAllGroups(): Promise<void> {
         waiting: agg.waitingMaterial,
         promoted: agg.promoted,
         completedExisting: agg.completedExisting,
+        completionErrors: agg.completionErrors,
       });
     await refreshTab(activeTab);
   } catch (e) {
@@ -2987,179 +3394,116 @@ function renderSettings(): void {
 
 // ══════════════════════════ MCP 服务选项卡 ══════════════════════════
 
-/** 渲染 MCP 服务选项卡 */
+/** Render actual listener state, independent from the saved switch positions. */
 function renderMcp(): void {
-  if (!api) {
-    return;
-  }
+  if (!api) return;
   const root = $<HTMLElement>('tab-mcp');
   root.replaceChildren();
   const mcp = api.mcp;
-
-  let enabled = false;
-  let host = '127.0.0.1';
-  let port: number | null = null;
-  let url: string | null = null;
-  let lanAccessible = false;
-  let lanUrl: string | null = null;
-  let tokenEnabled = false;
-  let token = '';
-  try {
-    const st = mcp.getStatus();
-    enabled = st.enabled;
-    host = st.host;
-    port = st.port;
-    url = st.url;
-    lanAccessible = st.lanAccessible;
-    lanUrl = st.lanUrl;
-    tokenEnabled = !!mcp.isTokenEnabled?.();
-    token = tokenEnabled ? mcp.ensureToken() : '';
-  } catch (e) {
+  let status: ReturnType<typeof mcp.getStatus>;
+  try { status = mcp.getStatus(); }
+  catch (e) {
     showError(getString('panel-err-mcp-status-failed', { error: errMsg(e) }));
     return;
   }
-
   const card = el('div', 'card');
   const head = el('div', 'card-head');
-  const sgIcon = el('span', 'sg-ic');
-  sgIcon.innerHTML = iconSVG('server', 'ic');
-  head.append(sgIcon);
-  head.append(el('h3', '', getString('panel-mcp-title')));
-  const stBadge = el('span', `badge ${enabled ? 'ok' : 'muted'}`);
-  stBadge.append(iconEl(enabled ? 'zap' : 'power', 'ic ic-sm'));
-  stBadge.append(document.createTextNode(getString(enabled ? 'panel-mcp-running' : 'panel-mcp-stopped')));
-  head.append(stBadge);
+  head.append(iconEl('server', 'ic'), el('h3', '', getString('panel-mcp-title')));
+  const modeLabels = {
+    stopped: getString('panel-network-mode-stopped'),
+    loopback: getString('panel-network-mode-loopback'),
+    lan: getString('panel-network-mode-lan'),
+    internet: getString('panel-network-mode-internet'),
+  };
+  head.append(el('span', `badge ${status.mode !== 'stopped' ? 'ok' : 'muted'}`, modeLabels[status.mode]));
   card.append(head);
 
-  // 启用开关
-  const toggleRow = el('div', 'mcp-row');
-  toggleRow.append(el('span', 'k', getString('panel-mcp-switch')));
-  const toggle = el('input');
-  toggle.type = 'checkbox';
-  toggle.className = 'switch';
-  toggle.checked = enabled;
-  toggle.title = getString(enabled ? 'panel-mcp-disable-title' : 'panel-mcp-enable-title');
-  toggle.setAttribute('aria-label', getString('panel-mcp-switch-aria'));
-  toggle.addEventListener('change', () => {
-    void setMcpEnabled(toggle.checked);
-  });
-  toggleRow.append(toggle);
-  toggleRow.append(el('span', '', getString(enabled ? 'panel-mcp-enabled' : 'panel-mcp-disabled')));
-  card.append(toggleRow);
-
-  // 主机与实际监听端口
-  const hostRow = el('div', 'mcp-row');
-  hostRow.append(el('span', 'k', getString('panel-mcp-host')));
-  hostRow.append(el('div', 'url-box', host));
-  card.append(hostRow);
-
-  const portRow = el('div', 'mcp-row');
-  portRow.append(el('span', 'k', getString('panel-mcp-port')));
-  portRow.append(el('div', 'url-box', port !== null ? String(port) : '—'));
-  card.append(portRow);
-
-  // 服务端点（一键复制）
-  const urlRow = el('div', 'mcp-row');
-  urlRow.append(el('span', 'k', getString('panel-mcp-endpoint')));
-  if (url) {
-    const urlBox = el('div', 'url-box', url);
-    urlBox.title = getString('panel-mcp-endpoint-title');
-    urlRow.append(urlBox);
-    urlRow.append(
-      opBtn(getString('panel-action-copy'), (b) => copyText(url!, b), { icon: 'copy', title: getString('panel-mcp-copy-endpoint-title') })
-    );
-  } else {
-    urlRow.append(el('span', 'muted', getString('panel-mcp-port-unknown')));
-  }
-  card.append(urlRow);
-
-  if (lanAccessible && lanUrl) {
-    const lanRow = el('div', 'mcp-row');
-    lanRow.append(el('span', 'k', 'LAN MCP'));
-    const lanBox = el('div', 'url-box', lanUrl);
-    lanBox.title = 'Replace <LAN-IP> with this computer\'s LAN address';
-    lanRow.append(lanBox);
-    lanRow.append(
-      opBtn(getString('panel-action-copy'), (b) => copyText(lanUrl!, b),
-        { icon: 'copy', title: 'Copy LAN MCP endpoint template' })
-    );
-    card.append(lanRow);
-    card.append(el('div', 'hint', 'LAN listener: 0.0.0.0. Replace <LAN-IP> with your Zotero host LAN address.'));
-  }
-  if (!lanAccessible) {
-    const localOnly = el('div', 'notice');
-    localOnly.append(iconEl('alert-circle', 'ic'));
-    localOnly.append(document.createTextNode(getString('panel-mcp-local-only')));
-    card.append(localOnly);
+  function switchRow(id: string, label: string, checked: boolean): HTMLInputElement {
+    const row = el('div', 'mcp-row');
+    const text = el('label', 'k', label);
+    text.htmlFor = id;
+    const input = el('input');
+    input.id = id;
+    input.type = 'checkbox';
+    input.className = 'switch';
+    input.checked = checked;
+    input.setAttribute('aria-label', label);
+    row.append(text, input);
+    card.append(row);
+    return input;
   }
 
-  // 访问凭据开关：原独立设置页配置合并到 MCP 模块。
-  const tokenToggleRow = el('div', 'mcp-row');
-  tokenToggleRow.append(el('span', 'k', getString('panel-mcp-token-switch')));
-  const tokenToggle = el('input');
-  tokenToggle.type = 'checkbox';
-  tokenToggle.className = 'switch';
-  tokenToggle.checked = tokenEnabled;
-  tokenToggle.setAttribute('aria-label', getString('panel-mcp-token-switch'));
-  tokenToggle.addEventListener('change', () => {
+  const enabled = switchRow('mcp-service-enabled', getString('panel-mcp-switch'), status.enabled);
+  enabled.addEventListener('change', () => { void setMcpEnabled(enabled.checked); });
+  const remote = switchRow('mcp-allow-remote', getString('panel-network-allow-remote'), status.allowRemote);
+  const oauth = switchRow('mcp-oauth-enabled', getString('panel-network-oauth-enabled'), status.oauthEnabled);
+  card.append(el('div', 'hint', getString('panel-network-switch-hint')));
+
+  const originRow = el('div', 'mcp-row network-origin-row');
+  const originLabel = el('label', 'k', getString('panel-network-public-origin'));
+  originLabel.htmlFor = 'mcp-oauth-origin';
+  const origin = el('input');
+  origin.id = 'mcp-oauth-origin';
+  origin.type = 'url';
+  origin.value = status.oauthPublicOrigin;
+  origin.placeholder = 'https://mcp.example.com';
+  origin.autocomplete = 'off';
+  const save = opBtn(getString('panel-action-save'), () => { void saveNetwork(); }, { icon: 'check' });
+  originRow.append(originLabel, origin, save);
+  card.append(originRow);
+  card.append(el('div', 'hint', getString('panel-network-origin-hint')));
+
+  let saving = false;
+  async function saveNetwork(): Promise<void> {
+    if (saving) return;
+    saving = true;
+    clearError();
+    for (const input of [enabled, remote, oauth, origin, save]) input.disabled = true;
     try {
-      mcp.setTokenEnabled(tokenToggle.checked);
+      await mcp.setNetworkOptions({
+        allowRemote: remote.checked, oauthEnabled: oauth.checked, oauthPublicOrigin: origin.value,
+      });
       renderMcp();
     } catch (e) {
-      showError(getString('panel-err-mcp-token-toggle-failed', { error: errMsg(e) }));
-    }
-  });
-  tokenToggleRow.append(tokenToggle);
-  tokenToggleRow.append(
-    el(
-      'span',
-      '',
-      getString(tokenEnabled ? 'panel-mcp-token-enabled' : 'panel-mcp-token-disabled-short')
-    )
-  );
-  card.append(tokenToggleRow);
-
-  // token：默认关闭，仅在用户显式启用访问凭据后生成/展示。
-  const tokenRow = el('div', 'mcp-row');
-  tokenRow.append(el('span', 'k', getString('panel-mcp-token')));
-  if (tokenEnabled) {
-    const tokenBox = el('div', 'token-box', token);
-    tokenBox.title = getString('panel-mcp-token-title');
-    tokenRow.append(tokenBox);
-    tokenRow.append(
-      opBtn(getString('panel-action-copy'), (b) => copyText(token, b), {
-        icon: 'copy',
-        title: getString('panel-mcp-copy-token-title'),
-        secondary: true,
-      })
-    );
-    tokenRow.append(
-      opBtn(getString('panel-action-regen'), () => regenerateToken(), {
-        icon: 'key',
-        title: getString('panel-mcp-regen-title'),
-        secondary: true,
-      })
-    );
-  } else {
-    tokenRow.append(el('span', 'muted', getString('panel-mcp-token-disabled')));
+      renderMcp();
+      showError(getString('panel-network-save-error', { error: errMsg(e) }));
+    } finally { saving = false; }
   }
-  card.append(tokenRow);
-  card.append(
-    el('div', 'hint', getString(tokenEnabled ? 'panel-mcp-token-hint' : 'panel-mcp-token-disabled-hint'))
-  );
+  remote.addEventListener('change', () => { void saveNetwork(); });
+  oauth.addEventListener('change', () => { void saveNetwork(); });
+  origin.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); void saveNetwork(); }
+  });
 
-  // 关闭时的明确提示
-  const notice = el('div', 'notice');
-  notice.append(iconEl('alert-circle', 'ic'));
-  notice.append(
-    document.createTextNode(getString('panel-mcp-stopped-notice'))
-  );
+  function addressRow(label: string, address: string | null): void {
+    if (!address) return;
+    const row = el('div', 'mcp-row');
+    row.append(el('span', 'k', label), el('div', 'url-box', address));
+    row.append(opBtn(getString('panel-action-copy'), (button) => copyText(address, button),
+      { icon: 'copy', title: getString('panel-mcp-copy-endpoint-title') }));
+    card.append(row);
+  }
+  if (status.enabled) addressRow(getString('panel-network-local-url'), status.url);
+  if (status.lanAccessible) addressRow(getString('panel-network-lan-url'), status.lanUrl);
+  if (status.oauthAccessible) {
+    addressRow(getString('panel-network-oauth-url'), status.oauthUrl);
+    card.append(el('div', 'hint', getString('panel-network-oauth-port')));
+    const revokeRow = el('div', 'mcp-row');
+    const result = el('span', 'muted');
+    result.setAttribute('role', 'status');
+    revokeRow.append(opBtn(getString('panel-network-revoke'), () => {
+      if (!window.confirm(getString('panel-network-revoke-confirm'))) return;
+      mcp.revokeOAuthAuthorizations();
+      result.textContent = getString('panel-network-revoked');
+    }, { icon: 'key', secondary: true }), result);
+    card.append(revokeRow);
+  }
+  if (status.networkError) card.append(el('div', 'notice', status.networkError));
+  const notice = el('div', 'notice', getString('panel-mcp-stopped-notice'));
   notice.id = 'mcp-stopped-notice';
-  notice.hidden = enabled;
+  notice.hidden = status.enabled;
   card.append(notice);
-
-  root.append(card);
-  root.append(auditCard());
+  root.append(card, auditCard());
 }
 
 /** 领取/提交记录卡片：从任务的 claimedAt/completedAt/attempts/lastError/noteKey
@@ -3176,7 +3520,7 @@ function auditCard(): HTMLElement {
 
   interface AuditEvent {
     ts: number;
-    kind: 'claim' | 'done' | 'fail';
+    kind: 'claim' | 'done' | 'recognized' | 'fail';
     task: Task;
   }
   const events: AuditEvent[] = [];
@@ -3185,7 +3529,9 @@ function auditCard(): HTMLElement {
       events.push({ ts: t.claimedAt, kind: 'claim', task: t });
     }
     if (t.completedAt) {
-      events.push({ ts: t.completedAt, kind: 'done', task: t });
+      events.push({ ts: t.completedAt,
+        kind: t.completionOrigin === 'existing-note' || t.completionOrigin === 'existing-attachment'
+          ? 'recognized' : 'done', task: t });
     }
     if (t.status === 'failed') {
       // 失败事件时间取领取时间（失败发生在领取之后），从未领取则回退创建时间
@@ -3202,6 +3548,7 @@ function auditCard(): HTMLElement {
   const KIND_META = {
     claim: { label: getString('panel-audit-claim'), cls: 'accent', icon: 'zap' },
     done: { label: getString('panel-audit-done'), cls: 'ok', icon: 'check-circle' },
+    recognized: { label: getString('panel-completion-recognized'), cls: 'ok', icon: 'check-circle' },
     fail: { label: getString('panel-audit-fail'), cls: 'danger', icon: 'alert-circle' },
   } as const;
   const list = el('div', 'audit-list');
@@ -3219,7 +3566,7 @@ function auditCard(): HTMLElement {
     info.append(l1);
     const sgName = api!.skillGroups.get(ev.task.skillGroupId)?.name ?? getString('panel-detail-sg-deleted');
     let sub = sgName;
-    if (ev.kind === 'done') {
+    if (ev.kind === 'done' || ev.kind === 'recognized') {
       const t = ev.task;
       const dtype = t.deliverableType ?? (t.noteKey ? 'note' : null);
       if (dtype === 'file' || (dtype === 'markdown' && !t.noteKey)) {
@@ -3249,8 +3596,10 @@ async function setMcpEnabled(v: boolean): Promise<void> {
     return;
   }
   clearError();
+  const toggle = document.getElementById('mcp-service-enabled') as HTMLInputElement | null;
+  if (toggle) toggle.disabled = true;
   try {
-    api.mcp.setEnabled(v);
+    await api.mcp.setEnabled(v);
     renderMcp();
     if (!v) {
       // 关闭时明确提示"已停止监听"
@@ -3260,26 +3609,8 @@ async function setMcpEnabled(v: boolean): Promise<void> {
       }
     }
   } catch (e) {
-    showError(getString('panel-err-mcp-toggle-failed', { error: errMsg(e) }));
-  }
-}
-
-/** 重新生成 token（操作前 confirm） */
-async function regenerateToken(): Promise<void> {
-  if (!api) {
-    return;
-  }
-  clearError();
-  if (
-    !window.confirm(getString('panel-confirm-regen-token'))
-  ) {
-    return;
-  }
-  try {
-    api.mcp.regenerateToken();
     renderMcp();
-  } catch (e) {
-    showError(getString('panel-err-regen-token-failed', { error: errMsg(e) }));
+    showError(getString('panel-err-mcp-toggle-failed', { error: errMsg(e) }));
   }
 }
 

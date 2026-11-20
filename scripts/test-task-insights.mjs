@@ -129,4 +129,18 @@ assert.deepEqual(stats.bySkill.find(s => s.skillGroupId === 'beta'),
   { skillGroupId: 'beta', total: 2, done: 1, added30: 0, completed30: 1 });
 assert.equal(stats.daily.some(d => d.key === '2025-10-01' && d.added > 0), false);
 
+// Existing outputs remain in task totals and completed lists, but their discovery
+// must not count as new agent work on the discovery day.
+const recognized = ['existing-note', 'existing-attachment'].map((completionOrigin, i) => ({
+  id: 'recognized-' + i, skillGroupId: 'alpha', status: 'done', itemKey: 'KNOWN-' + i,
+  createdAt: now, completedAt: now, submissionCount: 0, completionOrigin,
+}));
+const withExisting = summarizeTaskActivity([...tasks, ...recognized], now);
+assert.equal(withExisting.total, 6);
+assert.equal(withExisting.statusCounts.done, 4);
+assert.equal(withExisting.daily.at(-1).completed, 1);
+assert.equal(withExisting.monthly.at(-1).completed, 2);
+assert.equal(withExisting.bySkill.find(s => s.skillGroupId === 'alpha').completed30, 1);
+assert.equal(paginateTasks([...tasks, ...recognized], { status: 'done' }).total, 4);
+
 console.log('✓ Task paging and activity aggregation passed');

@@ -1,11 +1,22 @@
 /**
  * Pure task-list queries and activity aggregation. No Zotero dependencies.
- * Only page-sized shallow copies leave the task store for the panel.
+ * Only page-sized copies leave the task store for the panel, with frozen rule data copied too.
  */
 import type {
   Task, TaskActivity, TaskActivityBucket, TaskActivityBySkill,
   TaskCursor, TaskFilter, TaskPage, TaskPageOptions, TaskStatus,
 } from './types';
+
+export function copyTaskRecord(task: Task): Task {
+  const copy = { ...task };
+  if (task.completionRuleSnapshot !== undefined) {
+    copy.completionRuleSnapshot = JSON.parse(JSON.stringify(task.completionRuleSnapshot));
+  }
+  if (task.deliverableSnapshot !== undefined) {
+    copy.deliverableSnapshot = JSON.parse(JSON.stringify(task.deliverableSnapshot));
+  }
+  return copy;
+}
 
 const STATUSES: TaskStatus[] = [
   'waiting-material', 'pending', 'claimed', 'done', 'failed', 'cancelled',
@@ -139,7 +150,7 @@ export class TaskQueryIndex {
     const last = selected[selected.length - 1];
     return {
       total,
-      items: selected.map(task => ({ ...task })),
+      items: selected.map(copyTaskRecord),
       nextCursor: last && start + selected.length < total ? cursorFor(last) : null,
     };
   }
@@ -215,7 +226,8 @@ export function summarizeTaskActivity(
       if (monthBucket) monthBucket.added++;
       if (task.createdAt >= last30Start && task.createdAt <= now) skill.added30++;
     }
-    if (task.status === 'done' && validTimestamp(task.completedAt)) {
+    if (task.status === 'done' && validTimestamp(task.completedAt) &&
+      task.completionOrigin !== 'existing-note' && task.completionOrigin !== 'existing-attachment') {
       const day = localDateKey(task.completedAt);
       const month = localMonthKey(task.completedAt);
       const dayBucket = dayMap.get(day);

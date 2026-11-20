@@ -6,8 +6,10 @@ pref("extensions.zotero-skill-task.enabled", true);
 // MCP 服务默认启用；用户可在设置或管理面板中显式关闭。
 pref("extensions.zotero-skill-task.mcp.enabled", true);
 
-// MCP 访问凭据默认关闭；用户需要鉴权时可显式启用。
-pref("extensions.zotero-skill-task.mcp.tokenEnabled", false);
+// 新装与旧版升级均默认仅本机；旧 tokenEnabled 不迁移为远程访问权限。
+pref("extensions.zotero-skill-task.mcp.allowRemote", false);
+pref("extensions.zotero-skill-task.mcp.oauthEnabled", false);
+pref("extensions.zotero-skill-task.mcp.oauthPublicOrigin", "");
 
 // 面板快捷键默认关闭；用户可在插件设置中显式启用。
 pref("extensions.zotero-skill-task.shortcut.enabled", false);

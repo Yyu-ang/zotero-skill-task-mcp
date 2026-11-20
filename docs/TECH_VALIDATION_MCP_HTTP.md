@@ -4,35 +4,27 @@ This document describes the **current public implementation** of the plugin's MC
 
 ## 1. Transport
 
-The plugin reuses Zotero's built-in Connector HTTP server through `Zotero.Server.Endpoints`.
+The plugin owns two independent Gecko `nsIServerSocket` listeners, sharing the MCP route `/skilltask/mcp` and the same task implementation.
 
-- Endpoint: `/skilltask/mcp`
-- The Zotero Connector endpoint remains loopback-only (`127.0.0.1`).
-- The plugin also creates a dedicated LAN listener on TCP `23121` through Gecko `nsIServerSocket`, with `loopbackOnly=false` (all interfaces).
-- Both transports dispatch to the same protocol and task implementation in `McpServer.handleRequest`.
-- Turning MCP off unregisters/disables the plugin endpoint; it does not stop Zotero's own Connector Server.
+- **23123:** loopback by default; all interfaces only after “Allow remote access” is enabled. The request policy accepts loopback and private/link-local peers, validates Host, and rejects browser Origin headers. It serves only the plugin MCP route.
+- **23124:** created only when remote access and OAuth are both enabled. Every MCP request requires OAuth, even when the TCP peer is a local reverse proxy.
+- Zotero's own Connector listener on **23119**, its routes, preferences and lifecycle are untouched. No listener uses **23121**.
+- Mode changes close live plugin transports before changing policy. Disabling or unloading the plugin closes both owned sockets.
+- The panel reports actual socket state. Bind failure never selects a different port; the implementation attempts to return to local-only 23123 and reports any remaining failure.
 
-This keeps the plugin lifecycle simple and avoids maintaining a separate network service.
+## 2. Access policy and OAuth
 
-## 2. Default security model
+Both remote-access options default to false, including upgrades from old token settings. OAuth alone does not open a remote socket. Local/LAN access requires no token.
 
-Current defaults:
+The public OAuth origin must be configured as an HTTPS origin. A TLS reverse proxy/tunnel forwards that origin to `127.0.0.1:23124`; it must never forward to the unauthenticated 23123 endpoint. OAuth issuer and resource come exclusively from the saved origin, not Host or forwarded headers.
 
-- MCP endpoint: **enabled**
-- Access token requirement: **disabled**
-- Network exposure: **LAN listener on port 23121** (alongside the original loopback endpoint)
+`src/oauthServer.ts` implements discovery, dynamic public-client registration, authorization code + S256 PKCE, local Zotero consent, access/rotating refresh tokens and revocation. The resource is the public MCP URL and the scope is `skilltask`. Consent explains material access, skill-group creation, task management and deliverable writes. Callback URI matching is exact; untrusted client labels and callback URLs cannot contain control characters.
 
-Users can disable MCP from the plugin panel. Access-token protection can be enabled separately.
+Authorization codes last five minutes and are single-use. Access tokens last one hour; refresh families last at most thirty days. Refresh replay revokes the whole family. Token digests and all authorization state live only in process memory. Revocation, mode/origin changes and restart invalidate grants; secure randomness and SHA-256 are required.
 
-The implementation follows these boundaries:
+Socket admission limits active connections and body memory. Route, method and OAuth authentication checks run before body allocation. OAuth bodies are limited to 8 KiB. HTTP framing rejects duplicate headers, transfer encoding, invalid lengths and malformed UTF-8. There is no authorization bypass based on source IP or X-Forwarded headers on 23124.
 
-- MCP requests do not accept arbitrary filesystem paths for read/write operations.
-- Material returned to an Agent is limited to the fields enabled by the selected skill.
-- Tokens are never intentionally written to logs.
-- Note HTML is sanitized before Zotero write-back.
-- File deliverables are written only to plugin-controlled locations before optional Zotero attachment import.
-
-The independent listener permits direct LAN access. It uses the same optional bearer-token setting and MCP tool authorization behavior as the local endpoint. This is deliberately a local-network feature; the host operator decides which firewall rules apply.
+Existing application boundaries remain: returned materials follow skill settings, HTML is sanitized before note creation, and file output is limited to plugin-controlled locations before Zotero attachment import. See [network-access.md](network-access.md) for setup and validation.
 
 ## 3. MCP protocol compatibility
 
@@ -104,7 +96,7 @@ When a file deliverable is configured as a Zotero attachment, the plugin imports
 
 The repository manifest currently targets Zotero 9–10. Major Zotero upgrades should revalidate:
 
-- `Zotero.Server.Endpoints`
+- Gecko socket and stream APIs
 - plugin lifecycle hooks
 - attachment APIs
 - note creation/update APIs
@@ -112,9 +104,12 @@ The repository manifest currently targets Zotero 9–10. Major Zotero upgrades s
 
 ## 7. Relevant source files
 
-- `src/mcpServer.ts` — protocol handling, local Connector registration, LAN listener lifecycle, and MCP tools
+- `src/mcpServer.ts` — protocol handling, OAuth routing and MCP tools
+- `src/networkAccess.ts` — two-switch mode selection, IP/Host policy and listener lifecycle
+- `src/oauthServer.ts` — OAuth protocol and in-memory authorization state
 - `src/lanMcpListener.ts` — independent Gecko TCP socket and byte-framed HTTP transport
-- `scripts/test-lan-mcp.mjs` — mocked Gecko socket regression tests
+- `scripts/test-lan-mcp.mjs` and `scripts/test-network-access.mjs` — socket framing and access-mode tests
+- `scripts/test-oauth.mjs` and `scripts/test-mcp-access.mjs` — OAuth and MCP adapter tests
 - `src/taskStore.ts` — task state, leases, completion/revision
 - `src/taskGenerator.ts` — scanning and material readiness
 - `src/attachments.ts` — attachment lookup/replacement helpers

@@ -10,13 +10,14 @@
  * - 绝不直接写 Zotero 数据库；所有持久化只经过 IOUtils 的 JSON 文件 API。
  * - IOUtils.writeJSON 内部为原子写（临时文件 + 重命名），崩溃后不会产生半截文件。
  * - JS 单线程内“先释放过期租约 → 取最早 pending → 标记 claimed → 落盘”即原子领取。
- * - 对外返回任务时一律返回浅拷贝，调用方无法绕开本类修改内部状态。
+ * - 对外返回任务副本，并复制嵌套规则，调用方无法绕开本类修改内部状态。
  */
 
 import {
   DATA_DIR_NAME,
   type ITaskStore,
   type Task,
+  type TaskClaimContext,
   type TaskCompleteResult,
   type TaskCreateData,
   type TaskFilter,
@@ -29,10 +30,12 @@ import {
 import { LIMITS, error, log, truncateForDisplay } from './utils';
 import { traced } from './utils/trace';
 import { getLeaseMs } from './prefs';
-import { TaskQueryIndex, summarizeTaskActivity } from './taskInsights';
+import { withTaskLock } from './taskCoordinator';
+import { TaskQueryIndex, copyTaskRecord, summarizeTaskActivity } from './taskInsights';
 
 /** 任务文件的文件名（位于 Zotero 数据目录下 DATA_DIR_NAME 目录内） */
 const TASKS_FILE_NAME = 'tasks.json';
+const COMPLETION_CHECK_ERROR_PREFIX = 'completion-check: ';
 
 /** 全部六种任务状态（用于计数补齐与状态合法性校验） */
 const ALL_STATUSES: TaskStatus[] = [
@@ -135,7 +138,7 @@ export class TaskStore implements ITaskStore {
 
   // ──────────── 查询 ────────────
 
-  /** 列出任务（可选按技能组和状态过滤），返回浅拷贝。 */
+  /** 列出任务（可选按技能组和状态过滤），返回独立副本。 */
   list(filter?: TaskFilter): Task[] {
     let result = Array.from(this.tasks.values());
     if (filter?.skillGroupId !== undefined) {
@@ -147,7 +150,7 @@ export class TaskStore implements ITaskStore {
         : [filter.status];
       result = result.filter((t) => wanted.includes(t.status));
     }
-    return result.map((t) => ({ ...t }));
+    return result.map(copyTaskRecord);
   }
 
   private getTaskIndex(): TaskQueryIndex {
@@ -168,7 +171,7 @@ export class TaskStore implements ITaskStore {
   /** 按 id 取任务；不存在返回 undefined。 */
   get(id: string): Task | undefined {
     const task = this.tasks.get(id);
-    return task ? { ...task } : undefined;
+    return task ? copyTaskRecord(task) : undefined;
   }
 
   /**
@@ -177,13 +180,15 @@ export class TaskStore implements ITaskStore {
    */
   findActiveBySkillAndItem(
     skillGroupId: string,
-    itemKey: string
+    itemKey: string,
+    libraryID?: number
   ): Task | undefined {
     let found: Task | undefined;
     for (const task of this.tasks.values()) {
       if (
         task.skillGroupId === skillGroupId &&
         task.itemKey === itemKey &&
+        matchesLibrary(task, libraryID) &&
         task.status !== 'done' &&
         task.status !== 'cancelled'
       ) {
@@ -191,22 +196,23 @@ export class TaskStore implements ITaskStore {
         found = task;
       }
     }
-    return found ? { ...found } : undefined;
+    return found ? copyTaskRecord(found) : undefined;
   }
 
 
   findLatestBySkillAndItem(
     skillGroupId: string,
-    itemKey: string
+    itemKey: string,
+    libraryID?: number
   ): Task | undefined {
     let found: Task | undefined;
     for (const task of this.tasks.values()) {
-      if (task.skillGroupId !== skillGroupId || task.itemKey !== itemKey) continue;
+      if (task.skillGroupId !== skillGroupId || task.itemKey !== itemKey || !matchesLibrary(task, libraryID)) continue;
       if (!found || task.createdAt >= found.createdAt) {
         found = task;
       }
     }
-    return found ? { ...found } : undefined;
+    return found ? copyTaskRecord(found) : undefined;
   }
 
   /** 取内部任务记录（无拷贝）；不存在时抛错（id 超长时截断展示） */
@@ -244,6 +250,7 @@ export class TaskStore implements ITaskStore {
       skillGroupVersion: data.skillGroupVersion,
       instructionSnapshot: data.instructionSnapshot,
       itemKey: data.itemKey,
+      libraryID: validLibraryID(data.libraryID),
       status,
       leaseExpiresAt: null,
       attempts: 0,
@@ -259,7 +266,7 @@ export class TaskStore implements ITaskStore {
     };
     this.tasks.set(task.id, task);
     await this.persist();
-    return { ...task };
+    return copyTaskRecord(task);
   }
 
 
@@ -291,10 +298,14 @@ export class TaskStore implements ITaskStore {
       skillGroupVersion: data.skillGroupVersion,
       instructionSnapshot: data.instructionSnapshot,
       itemKey: data.itemKey,
+      libraryID: validLibraryID(data.libraryID),
       status: 'done',
       leaseExpiresAt: null,
       attempts: 0,
-      submissionCount: 1,
+      submissionCount: isExistingCompletion(result) ? 0 : 1,
+      completionOrigin: result.completionOrigin ?? 'agent',
+      completionRuleVersion: result.completionRuleVersion,
+      completionCheckedAt: result.completionCheckedAt ?? (isExistingCompletion(result) ? now : undefined),
       lastError: null,
       noteKey:
         typeof result.noteKey === 'string' && result.noteKey
@@ -312,7 +323,7 @@ export class TaskStore implements ITaskStore {
     };
     this.tasks.set(task.id, task);
     await this.persist();
-    return { ...task };
+    return copyTaskRecord(task);
   }
 
   /**
@@ -353,7 +364,7 @@ export class TaskStore implements ITaskStore {
     candidate.attempts += 1;
 
     await this.persist();
-    return { ...candidate };
+    return copyTaskRecord(candidate);
   }
 
   /**
@@ -400,20 +411,23 @@ export class TaskStore implements ITaskStore {
       Number.isFinite(leaseMs) && leaseMs > 0 ? Math.floor(leaseMs) : getLeaseMs();
     task.leaseExpiresAt = task.leaseExpiresAt + safeLeaseMs;
     await this.persist();
-    return { ...task };
+    return copyTaskRecord(task);
   }
 
   /** 主动归还：仅 claimed 状态允许，归还后立即回到 pending。 */
   @traced
   async releaseLease(id: string): Promise<Task> {
-    const task = this.require(id);
-    if (task.status !== 'claimed') {
-      throw new Error(`只有已领取任务可归还，当前状态：${task.status}`);
-    }
-    task.status = 'pending';
-    task.leaseExpiresAt = null;
-    await this.persist();
-    return { ...task };
+    const pending = this.require(id);
+    return withTaskLock(pending.skillGroupId, pending.libraryID, pending.itemKey, async () => {
+      const task = this.require(id);
+      if (task.status !== 'claimed') {
+        throw new Error(`只有已领取任务可归还，当前状态：${task.status}`);
+      }
+      task.status = 'pending';
+      task.leaseExpiresAt = null;
+      await this.persist();
+      return copyTaskRecord(task);
+    });
   }
 
   /**
@@ -424,7 +438,10 @@ export class TaskStore implements ITaskStore {
   async complete(id: string, result: TaskCompleteResult): Promise<Task> {
     const task = this.require(id);
     if (task.status === 'done') {
-      return { ...task }; // 幂等：重复提交不产生副作用
+      return copyTaskRecord(task); // 幂等：重复提交不产生副作用
+    }
+    if (task.status === 'cancelled') {
+      throw new Error('已取消任务不能标记为完成');
     }
     if (
       result.deliverableType !== 'note' &&
@@ -450,9 +467,94 @@ export class TaskStore implements ITaskStore {
         ? result.noteKey
         : null;
     task.leaseExpiresAt = null;
-    task.submissionCount = Math.max(1, task.submissionCount || 0);
+    task.lastError = null;
+    task.completionOrigin = result.completionOrigin ?? 'agent';
+    task.completionRuleVersion = result.completionRuleVersion;
+    task.completionCheckedAt = result.completionCheckedAt ?? (isExistingCompletion(result) ? task.completedAt : undefined);
+    task.submissionCount = isExistingCompletion(result)
+      ? Math.max(0, task.submissionCount || 0)
+      : Math.max(1, task.submissionCount || 0);
     await this.persist();
-    return { ...task };
+    return copyTaskRecord(task);
+  }
+
+  /** 将已有笔记记为完成；扫描不会抢走租约或恢复已取消任务。 */
+  @traced
+  async recognizeExistingNote(
+    id: string,
+    result: TaskCompleteResult,
+    allowClaimed: boolean = false
+  ): Promise<Task | null> {
+    const task = this.require(id);
+    if (task.status === 'cancelled') return null;
+    if (task.status === 'done' && task.completionOrigin !== 'existing-note') return null;
+    if (task.status === 'claimed' && (
+      !allowClaimed || task.leaseExpiresAt === null || task.leaseExpiresAt <= Date.now()
+    )) return null;
+    if ((result.deliverableType !== 'note' && result.deliverableType !== 'markdown') ||
+      typeof result.noteKey !== 'string' || !result.noteKey.trim() ||
+      result.deliverableRef !== result.noteKey) {
+      throw new Error('已有笔记完成记录必须包含有效笔记 key');
+    }
+    const recognized: TaskCompleteResult = {
+      ...result,
+      attachmentKey: null,
+      completionOrigin: 'existing-note',
+      completionCheckedAt: result.completionCheckedAt ?? Date.now(),
+    };
+    if (task.status !== 'done') return this.complete(id, recognized);
+
+    // 重新扫描可以改选仍有效的另一篇笔记，保留最初确认时间和提交次数。
+    task.noteKey = recognized.noteKey;
+    task.deliverableRef = recognized.deliverableRef;
+    task.deliverableType = recognized.deliverableType;
+    task.completionRuleVersion = recognized.completionRuleVersion;
+    task.completionCheckedAt = recognized.completionCheckedAt;
+    if (task.lastError?.startsWith(COMPLETION_CHECK_ERROR_PREFIX)) task.lastError = null;
+    await this.persist();
+    return copyTaskRecord(task);
+  }
+
+  @traced
+  async reopenExistingCompletion(
+    id: string,
+    status: 'pending' | 'waiting-material'
+  ): Promise<Task | null> {
+    const task = this.require(id);
+    if (task.status !== 'done' || task.completionOrigin !== 'existing-note') return null;
+    if (status !== 'pending' && status !== 'waiting-material') {
+      throw new Error('重新开放任务只允许 pending 或 waiting-material');
+    }
+    task.status = status;
+    task.noteKey = null;
+    task.deliverableRef = null;
+    task.deliverableType = null;
+    task.attachmentKey = null;
+    task.leaseExpiresAt = null;
+    task.claimedAt = null;
+    task.completedAt = null;
+    task.lastError = null;
+    task.submissionCount = 0;
+    task.completionOrigin = undefined;
+    task.completionRuleVersion = undefined;
+    task.completionRuleSnapshot = undefined;
+    task.deliverableSnapshot = undefined;
+    task.completionCheckedAt = Date.now();
+    await this.persist();
+    return copyTaskRecord(task);
+  }
+
+  @traced
+  async recordCompletionCheckError(id: string, message: string | null): Promise<Task> {
+    const task = this.require(id);
+    if (message === null) {
+      if (task.lastError?.startsWith(COMPLETION_CHECK_ERROR_PREFIX)) task.lastError = null;
+    } else if (!task.lastError || task.lastError.startsWith(COMPLETION_CHECK_ERROR_PREFIX)) {
+      task.lastError = (COMPLETION_CHECK_ERROR_PREFIX + String(message)).slice(0, LIMITS.failReason);
+    }
+    task.completionCheckedAt = Date.now();
+    await this.persist();
+    return copyTaskRecord(task);
   }
 
   /**
@@ -485,9 +587,16 @@ export class TaskStore implements ITaskStore {
       typeof result.noteKey === 'string' && result.noteKey
         ? result.noteKey
         : null;
-    task.submissionCount = Math.max(1, task.submissionCount || 1) + 1;
+    const previouslyRecognized = isExistingCompletion(task);
+    task.submissionCount = Math.max(0, task.submissionCount || 0) + 1;
+    task.completionOrigin = 'agent';
+    task.completionRuleVersion = undefined;
+    task.completionCheckedAt = undefined;
+    // 第一次真实提交发生在此次更正，活动统计不应沿用扫描日期。
+    if (previouslyRecognized) task.completedAt = Date.now();
+    task.lastError = null;
     await this.persist();
-    return { ...task };
+    return copyTaskRecord(task);
   }
 
   /**
@@ -498,8 +607,8 @@ export class TaskStore implements ITaskStore {
   @traced
   async fail(id: string, errorMsg: string): Promise<Task> {
     const task = this.require(id);
-    if (task.status === 'done') {
-      throw new Error('已完成任务不能标记为失败');
+    if (task.status === 'done' || task.status === 'cancelled') {
+      throw new Error('已完成或已取消任务不能标记为失败');
     }
     const msg = String(errorMsg ?? '');
     if (msg.length > LIMITS.failReason) {
@@ -509,7 +618,7 @@ export class TaskStore implements ITaskStore {
     task.lastError = msg;
     task.leaseExpiresAt = null;
     await this.persist();
-    return { ...task };
+    return copyTaskRecord(task);
   }
 
   /**
@@ -518,22 +627,23 @@ export class TaskStore implements ITaskStore {
    */
   @traced
   async cancel(id: string): Promise<void> {
-    const task = this.require(id);
-    if (task.status === 'done') {
-      throw new Error('已完成任务不能取消');
-    }
-    task.status = 'cancelled';
-    task.leaseExpiresAt = null;
-    await this.persist();
+    const pending = this.require(id);
+    await withTaskLock(pending.skillGroupId, pending.libraryID, pending.itemKey, async () => {
+      const task = this.require(id);
+      if (task.status === 'done') throw new Error('已完成任务不能取消');
+      task.status = 'cancelled';
+      task.leaseExpiresAt = null;
+      await this.persist();
+    });
   }
 
   /**
-   * 内部方法：按 id 领取指定任务（MCP 领取流程用，未列入 ITaskStore 接口）。
+   * 按 id 领取指定任务，并冻结当前技能配置（MCP 领取流程用）。
    * 仅当任务处于 pending 时才标记 claimed + 租约 + attempts+1 并返回；
    * 已被并发领取走时返回 null（调用方继续试下一条），不抛错。
    */
   @traced
-  async claimById(id: string, leaseMs: number): Promise<Task | null> {
+  async claimById(id: string, leaseMs: number, context?: TaskClaimContext): Promise<Task | null> {
     const task = this.tasks.get(id);
     if (!task || task.status !== 'pending') {
       return null;
@@ -546,8 +656,15 @@ export class TaskStore implements ITaskStore {
     task.leaseExpiresAt = now + safeLeaseMs;
     task.claimedAt = now;
     task.attempts += 1;
+    if (context) {
+      task.skillGroupVersion = context.skillGroupVersion;
+      task.instructionSnapshot = context.instructionSnapshot;
+      task.completionRuleSnapshot = cloneRuleSnapshot(context.completionRuleSnapshot);
+      task.deliverableSnapshot = context.deliverableSnapshot === undefined
+        ? undefined : JSON.parse(JSON.stringify(context.deliverableSnapshot));
+    }
     await this.persist();
-    return { ...task };
+    return copyTaskRecord(task);
   }
 
   /**
@@ -564,7 +681,7 @@ export class TaskStore implements ITaskStore {
     task.status = 'pending';
     task.leaseExpiresAt = null;
     await this.persist();
-    return { ...task };
+    return copyTaskRecord(task);
   }
 
   /** 重试失败任务：failed → pending 并清空 lastError（attempts 保留）。非 failed 状态抛错。 */
@@ -591,7 +708,7 @@ export class TaskStore implements ITaskStore {
     }
     task.status = 'pending';
     await this.persist();
-    return { ...task };
+    return copyTaskRecord(task);
   }
 
   /**
@@ -620,6 +737,10 @@ function normalizeTask(item: unknown): Task | null {
   const status: TaskStatus = ALL_STATUSES.includes(raw.status as TaskStatus)
     ? (raw.status as TaskStatus)
     : 'pending';
+  const completionOrigin =
+    raw.completionOrigin === 'agent' || raw.completionOrigin === 'existing-note' || raw.completionOrigin === 'existing-attachment'
+      ? raw.completionOrigin
+      : status === 'done' ? 'agent' : undefined;
   const now = Date.now();
   return {
     id: raw.id,
@@ -629,6 +750,7 @@ function normalizeTask(item: unknown): Task | null {
     instructionSnapshot:
       typeof raw.instructionSnapshot === 'string' ? raw.instructionSnapshot : '',
     itemKey: raw.itemKey,
+    libraryID: validLibraryID(raw.libraryID),
     status,
     leaseExpiresAt:
       typeof raw.leaseExpiresAt === 'number' ? raw.leaseExpiresAt : null,
@@ -637,8 +759,18 @@ function normalizeTask(item: unknown): Task | null {
       typeof raw.submissionCount === 'number' && raw.submissionCount >= 0
         ? Math.floor(raw.submissionCount)
         : status === 'done'
-          ? 1
+          ? (completionOrigin === 'agent' ? 1 : 0)
           : 0,
+    completionOrigin,
+    completionRuleVersion:
+      typeof raw.completionRuleVersion === 'number' && Number.isInteger(raw.completionRuleVersion) && raw.completionRuleVersion > 0
+        ? raw.completionRuleVersion : undefined,
+    completionCheckedAt:
+      typeof raw.completionCheckedAt === 'number' && Number.isFinite(raw.completionCheckedAt) && raw.completionCheckedAt >= 0
+        ? raw.completionCheckedAt : undefined,
+    completionRuleSnapshot: cloneRuleSnapshot(raw.completionRuleSnapshot as Task['completionRuleSnapshot']),
+    deliverableSnapshot: raw.deliverableSnapshot && typeof raw.deliverableSnapshot === 'object'
+      ? JSON.parse(JSON.stringify(raw.deliverableSnapshot)) : undefined,
     lastError: typeof raw.lastError === 'string' ? raw.lastError : null,
     noteKey: typeof raw.noteKey === 'string' ? raw.noteKey : null,
     deliverableType:
@@ -656,4 +788,25 @@ function normalizeTask(item: unknown): Task | null {
     completedAt:
       typeof raw.completedAt === 'number' ? raw.completedAt : null,
   };
+}
+
+function isExistingCompletion(value: Pick<Task, 'completionOrigin'>): boolean {
+  return value.completionOrigin === 'existing-note' || value.completionOrigin === 'existing-attachment';
+}
+
+function validLibraryID(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+/** Legacy tasks without a library are resolved in the user library, never across libraries. */
+function matchesLibrary(task: Task, libraryID: number | undefined): boolean {
+  if (libraryID === undefined) return true;
+  if (task.libraryID !== undefined) return task.libraryID === libraryID;
+  const userLibraryID = typeof Zotero !== 'undefined'
+    ? (Zotero as any).Libraries?.userLibraryID : undefined;
+  return libraryID === userLibraryID;
+}
+
+function cloneRuleSnapshot(value: Task['completionRuleSnapshot']): Task['completionRuleSnapshot'] {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 }

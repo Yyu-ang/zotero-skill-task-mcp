@@ -10,8 +10,15 @@ on:
       - addon/**
       - src/**
       - scripts/**
+      - docs/releases/**
       - .github/workflows/release.yml
   workflow_dispatch:
+    inputs:
+      publish_prerelease:
+        description: Explicitly publish a new prerelease after review
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -37,37 +44,48 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Read version
+      - name: Read and validate release version
         id: version
         shell: bash
+        env:
+          RELEASE_BRANCH: ${{ github.ref_name }}
+          RELEASE_EVENT: ${{ github.event_name }}
+          PUBLISH_PRERELEASE: ${{ inputs.publish_prerelease }}
         run: |
-          VERSION=$(node -p "require('./package.json').version")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          node --input-type=module <<'NODE'
+          import { readFileSync, appendFileSync } from 'node:fs';
+          import { assertPublishBranch, shouldPublish } from './scripts/release-config.mjs';
+          const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
+          const info = assertPublishBranch(version, process.env.RELEASE_BRANCH);
+          const publish = shouldPublish(version, process.env.RELEASE_EVENT, process.env.PUBLISH_PRERELEASE === 'true');
+          appendFileSync(process.env.GITHUB_OUTPUT, `version=${info.version}\ntag=${info.tag}\npublish=${publish}\n`);
+          NODE
 
       - name: Check existing release
         id: existing
+        if: steps.version.outputs.publish == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
-          TAG="v${{ steps.version.outputs.version }}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "$TAG already exists; nothing to publish."
+            echo "$RELEASE_TAG already exists; nothing to publish."
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Typecheck
-        if: steps.existing.outputs.exists != 'true'
+        if: steps.version.outputs.publish == 'true' && steps.existing.outputs.exists != 'true'
         run: npm run typecheck
 
       - name: Test
-        if: steps.existing.outputs.exists != 'true'
+        if: steps.version.outputs.publish == 'true' && steps.existing.outputs.exists != 'true'
         run: npm test
 
       - name: Build and publish release
-        if: steps.existing.outputs.exists != 'true'
+        if: steps.version.outputs.publish == 'true' && steps.existing.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/release.mjs --publish

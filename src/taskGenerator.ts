@@ -22,6 +22,8 @@ import {
 import { log, error } from './utils';
 import { traced } from './utils/trace';
 import { findChildAttachmentsByFilename } from './attachments';
+import { assertValidCompletionRule, findMatchingBuiltinNote } from './noteCompletion';
+import { existingNoteResult, supportsNoteCompletion, taskLibraryID, withTaskLock } from './taskCoordinator';
 
 /** 扫描分块大小：每块从 Zotero 一次加载的条目数 */
 const SCAN_CHUNK_SIZE = 200;
@@ -36,6 +38,7 @@ interface ScanCounters {
   waitingMaterial: number;
   promoted: number;
   completedExisting: number;
+  completionErrors: number;
 }
 
 /** 全零扫描结果 */
@@ -48,6 +51,7 @@ function emptyScanResult(skillGroupId: string): ScanResult {
     waitingMaterial: 0,
     promoted: 0,
     completedExisting: 0,
+    completionErrors: 0,
   };
 }
 
@@ -165,6 +169,10 @@ export class TaskGenerator implements ITaskGenerator {
   private readonly skillGroups: ISkillGroupStore;
   private readonly tasks: ITaskStore;
   private observerId: string | null = null;
+  private notificationTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly changedItems = new Set<number>();
+  private readonly addedItems = new Set<number>();
+  private checkRemovedNotes = false;
   /**
    * 插件存活检查（需求单 需求4：由 core.ts 传入 () => core.alive）。
    * notifier 是长驻回调：触发时若插件已卸载，自注销并直接返回。
@@ -219,6 +227,10 @@ export class TaskGenerator implements ITaskGenerator {
       throw new Error('扫描失败：Zotero 条目 API 不可用');
     }
 
+    const rule = assertValidCompletionRule(sg.completionRule);
+    if (rule?.enabled && !supportsNoteCompletion(sg.deliverable)) {
+      throw new Error('已有笔记完成判定仅支持内建笔记交付物');
+    }
     this.scanLocks.add(skillGroupId);
     try {
       return await this.runScan(sg, opts, result);
@@ -303,7 +315,7 @@ export class TaskGenerator implements ITaskGenerator {
       {
         notify: async (
           event: string,
-          _type: string,
+          type: string,
           ids: Array<string | number>,
           _extraData: any
         ) => {
@@ -317,11 +329,25 @@ export class TaskGenerator implements ITaskGenerator {
             this.observerId = null;
             return;
           }
-          if (event !== 'add') return;
-          await this.handleItemsAdded(ids);
+          if (!['add', 'modify', 'delete', 'trash', 'remove'].includes(event)) return;
+          // Note.saveTx can await observers. Defer work so it never waits on the submit lock.
+          for (const rawID of ids) {
+            const value = type === 'item-tag' ? String(rawID).split('-')[0] : rawID;
+            const itemID = Number(value);
+            if (!Number.isSafeInteger(itemID) || itemID <= 0) continue;
+            this.changedItems.add(itemID);
+            if (event === 'add' && type === 'item') this.addedItems.add(itemID);
+          }
+          if (type === 'item' && (event === 'delete' || event === 'trash')) this.checkRemovedNotes = true;
+          if (this.notificationTimer === null) {
+            this.notificationTimer = setTimeout(() => {
+              this.notificationTimer = null;
+              void this.handleQueuedChanges().catch((e) => error('[TaskGenerator] 笔记变更重判失败:', e));
+            }, 50);
+          }
         },
       },
-      ['item'],
+      ['item', 'item-tag'],
       OBSERVER_ID,
     );
     this.observerId = id;
@@ -330,6 +356,11 @@ export class TaskGenerator implements ITaskGenerator {
 
   /** 取消注册（插件关闭时调用） */
   unregisterNotifier(): void {
+    if (this.notificationTimer !== null) clearTimeout(this.notificationTimer);
+    this.notificationTimer = null;
+    this.changedItems.clear();
+    this.addedItems.clear();
+    this.checkRemovedNotes = false;
     if (!this.observerId) return;
     try {
       Zotero.Notifier.unregisterObserver(this.observerId);
@@ -357,115 +388,125 @@ export class TaskGenerator implements ITaskGenerator {
     item: any,
     counters: ScanCounters,
   ): Promise<void> {
+    if (!item?.key || item.deleted || !isParentItem(item)) return;
+    const libraryID = taskLibraryID(item.libraryID);
+    // Keep scan and notification scope consistent: this beta targets the user library.
+    if (libraryID !== Zotero.Libraries.userLibraryID) return;
     try {
-      // 防御：条目 key 非法（缺失/非字符串）直接跳过，避免污染任务表
-      const itemKey: string =
-        typeof item?.key === 'string' && item.key ? item.key : '';
-      if (!itemKey) {
-        return;
-      }
-
-      // 1. 范围匹配
-      const inScope = await this.skillGroups.matchesScope(sg, item);
-      if (!inScope) return;
-
-      // 2. 已完成任务保持幂等。
-      // 例外：若该 done 是此前 skip 策略因“已有同名附件”自动完成的，
-      // 用户后来改成 overwrite，则必须允许生成新任务，否则下拉策略永远不会生效。
-      const latest = this.tasks.findLatestBySkillAndItem(sg.id, itemKey);
-      if (latest?.status === 'done') {
-        const conflict = this.deliverableAttachmentConflict(sg);
-        const wasCompletedByExistingAttachment =
-          conflict?.policy === 'overwrite' &&
-          !!latest.attachmentKey &&
-          latest.deliverableRef === conflict.targetName;
-        if (!wasCompletedByExistingAttachment) {
-          counters.skipped++;
-          return;
-        }
-      }
-
-      // 3. 若配置了固定附件名 + skip 策略，已有同名附件直接视为完成
-      const existingAttachment = await this.findExistingDeliverableAttachment(sg, item);
-      if (existingAttachment) {
-        const d = sg.deliverable;
-        const targetName =
-          d.type === 'file'
-            ? d.targetFileName
-            : d.type === 'markdown' && d.target === 'file'
-              ? d.targetFileName
-              : undefined;
-        if (!targetName) return;
-        const dtype = d.type === 'markdown' ? 'markdown' : 'file';
-        const existingActive = this.tasks.findActiveBySkillAndItem(sg.id, itemKey);
-        if (existingActive) {
-          await this.tasks.complete(existingActive.id, {
-            noteKey: null,
-            deliverableType: dtype,
-            deliverableRef: targetName,
-            attachmentKey:
-              typeof existingAttachment.key === 'string'
-                ? existingAttachment.key
-                : null,
-          });
-        } else {
-          await this.tasks.createCompleted(
-            {
-              skillGroupId: sg.id,
-              skillGroupVersion: sg.version,
-              instructionSnapshot: sg.instruction,
-              itemKey,
-            },
-            {
-              noteKey: null,
-              deliverableType: dtype,
-              deliverableRef: targetName,
-              attachmentKey:
-                typeof existingAttachment.key === 'string'
-                  ? existingAttachment.key
-                  : null,
-            }
-          );
-        }
-        counters.completedExisting++;
-        return;
-      }
-
-      // 4. 唯一性去重：同一「技能组 × 条目」最多一条有效任务
-      const existing = this.tasks.findActiveBySkillAndItem(sg.id, itemKey);
-      if (existing) {
-        if (existing.status === 'waiting-material') {
-          // FR-05：材料可能后到，重新判定；齐了就晋升为待领取
-          if (await this.materialsReady(sg, item)) {
-            const promoted = await this.tasks.promoteToPending(existing.id);
-            if (promoted) {
-              counters.promoted++;
-              return;
-            }
-          }
-        }
-        counters.skipped++;
-        return;
-      }
-
-      // 5. 材料判定 → 创建任务
-      const ready = await this.materialsReady(sg, item);
-      const status = ready ? 'pending' : 'waiting-material';
-      await this.tasks.create({
-        skillGroupId: sg.id,
-        skillGroupVersion: sg.version,
-        instructionSnapshot: sg.instruction,
-        itemKey,
-        status,
+      await withTaskLock(sg.id, libraryID, item.key, async () => {
+        const current = this.skillGroups.get(sg.id);
+        if (!current || !current.enabled || current.archived) return;
+        await this.processLocked(current, item, libraryID, counters);
       });
-      if (ready) {
-        counters.created++;
-      } else {
-        counters.waitingMaterial++;
-      }
     } catch (e) {
-      error('[TaskGenerator] 单条处理失败，已跳过:', sg.id, item?.key, e);
+      counters.completionErrors++;
+      error('[TaskGenerator] 单条处理失败，已跳过:', sg.id, item.key, e);
     }
+  }
+
+  private async processLocked(
+    sg: SkillGroup, item: any, libraryID: number, counters: ScanCounters,
+  ): Promise<void> {
+    const itemKey = item.key as string;
+    if (!(await this.skillGroups.matchesScope(sg, item))) return;
+    const latest = this.tasks.findLatestBySkillAndItem(sg.id, itemKey, libraryID);
+    const active = this.tasks.findActiveBySkillAndItem(sg.id, itemKey, libraryID);
+    // A background change must not cancel a running lease or revive a user cancellation.
+    if (latest?.status === 'cancelled' || active?.status === 'claimed') {
+      counters.skipped++;
+      return;
+    }
+    if (latest?.status === 'done' && latest.completionOrigin !== 'existing-note') {
+      const conflict = this.deliverableAttachmentConflict(sg);
+      const overwriteExisting = conflict?.policy === 'overwrite' &&
+        !!latest.attachmentKey && latest.deliverableRef === conflict.targetName;
+      if (!overwriteExisting) { counters.skipped++; return; }
+    }
+
+    if (sg.completionRule !== undefined) {
+      const result = await findMatchingBuiltinNote(item, sg.completionRule);
+      // A saved edit during asynchronous reads applies to the next decision immediately.
+      const current = this.skillGroups.get(sg.id);
+      if (!current || !current.enabled || current.archived) return;
+      if (current.version !== sg.version) {
+        return this.processLocked(current, item, libraryID, counters);
+      }
+      if (result.status === 'error') {
+        const blocked = active ?? (latest?.status === 'done' ? latest : await this.tasks.create({
+          skillGroupId: sg.id, skillGroupVersion: sg.version,
+          instructionSnapshot: sg.instruction, itemKey, libraryID,
+        }));
+        await this.tasks.recordCompletionCheckError(blocked.id, result.error);
+        counters.completionErrors++;
+        return;
+      }
+      if (result.status === 'matched') {
+        if (!supportsNoteCompletion(sg.deliverable)) {
+          throw new Error('已有笔记完成判定仅支持内建笔记交付物');
+        }
+        const completion = existingNoteResult(sg, result);
+        const previous = active ?? (latest?.status === 'done' ? latest : undefined);
+        if (previous) {
+          await this.tasks.recognizeExistingNote(previous.id, completion);
+        } else {
+          await this.tasks.createCompleted({
+            skillGroupId: sg.id, skillGroupVersion: sg.version,
+            instructionSnapshot: sg.instruction, itemKey, libraryID,
+          }, completion);
+        }
+        if (previous?.status === 'done') counters.skipped++;
+        else counters.completedExisting++;
+        return;
+      }
+      if (sg.completionRule.enabled && latest?.status === 'done' && latest.completionOrigin === 'existing-note') {
+        const ready = await this.materialsReady(sg, item);
+        await this.tasks.reopenExistingCompletion(latest.id, ready ? 'pending' : 'waiting-material');
+        if (ready) counters.created++; else counters.waitingMaterial++;
+        return;
+      }
+      if (active) await this.tasks.recordCompletionCheckError(active.id, null);
+    }
+    // Turning a rule off preserves recognized history until it is explicitly re-enabled.
+    if (latest?.status === 'done' && latest.completionOrigin === 'existing-note') {
+      counters.skipped++;
+      return;
+    }
+
+    const existingAttachment = await this.findExistingDeliverableAttachment(sg, item);
+    if (existingAttachment) {
+      const d = sg.deliverable;
+      const targetName = d.type === 'file' ? d.targetFileName
+        : d.type === 'markdown' && d.target === 'file' ? d.targetFileName : undefined;
+      if (!targetName) return;
+      const completion = {
+        noteKey: null,
+        deliverableType: d.type === 'markdown' ? 'markdown' as const : 'file' as const,
+        deliverableRef: targetName,
+        attachmentKey: typeof existingAttachment.key === 'string' ? existingAttachment.key : null,
+        completionOrigin: 'existing-attachment' as const,
+      };
+      if (active) await this.tasks.complete(active.id, completion);
+      else await this.tasks.createCompleted({
+        skillGroupId: sg.id, skillGroupVersion: sg.version,
+        instructionSnapshot: sg.instruction, itemKey, libraryID,
+      }, completion);
+      counters.completedExisting++;
+      return;
+    }
+    if (active) {
+      if (active.status === 'waiting-material' && await this.materialsReady(sg, item)) {
+        if (await this.tasks.promoteToPending(active.id)) { counters.promoted++; return; }
+      }
+      counters.skipped++;
+      return;
+    }
+    const ready = await this.materialsReady(sg, item);
+    await this.tasks.create({
+      skillGroupId: sg.id, skillGroupVersion: sg.version,
+      instructionSnapshot: sg.instruction, itemKey, libraryID,
+      status: ready ? 'pending' : 'waiting-material',
+    });
+    if (ready) counters.created++; else counters.waitingMaterial++;
   }
 
   private deliverableAttachmentConflict(
@@ -514,108 +555,58 @@ export class TaskGenerator implements ITaskGenerator {
     return (await resolveEarliestPdfPath(item)) !== null;
   }
 
-  /** Notifier 'add' 事件：批量加载后逐条处理，单条失败不中断整体 */
-  private async handleItemsAdded(ids: Array<string | number>): Promise<void> {
-    if (!ids || !ids.length) return;
-    let items: any[];
-    try {
-      // getAsync 的重载只接受纯 string[] 或纯 number[]，混合数组先分流
-      const strIds: string[] = [];
-      const numIds: number[] = [];
-      for (const id of ids) {
-        if (typeof id === 'string') strIds.push(id);
-        else if (typeof id === 'number') numIds.push(id);
-      }
-      const loaded = await Promise.all([
-        numIds.length ? Zotero.Items.getAsync(numIds) : [],
-        strIds.length ? Zotero.Items.getAsync(strIds) : [],
-      ]);
-      items = loaded.flat();
-    } catch (e) {
-      error('[TaskGenerator] 加载新增条目失败:', e);
-      return;
-    }
-    for (const item of items) {
-      if (!item) continue;
+  /** Batch notifications after Zotero's transaction has finished. */
+  private async handleQueuedChanges(): Promise<void> {
+    if (this.isAliveFn && !this.isAliveFn()) return;
+    const ids = [...this.changedItems];
+    const added = new Set(this.addedItems);
+    const recheckRemoved = this.checkRemovedNotes;
+    this.changedItems.clear();
+    this.addedItems.clear();
+    this.checkRemovedNotes = false;
+    const noteGroups = this.enabledSkillGroups().filter((sg) => sg.completionRule?.enabled);
+    const changedNoteKeys = new Set<string>();
+    const parents = new Map<number, { item: any; allGroups: boolean }>();
+    for (const id of ids) {
       try {
-        await this.handleAddedItem(item);
+        const item: any = await Zotero.Items.getAsync(id);
+        if (!item) continue;
+        const isNote = !!item.isNote?.();
+        if (isNote) changedNoteKeys.add(item.key);
+        if (isParentItem(item)) {
+          const previous = parents.get(item.id);
+          parents.set(item.id, { item, allGroups: added.has(id) || !!previous?.allGroups });
+        } else if (item.parentID && (isNote || isAttachmentItem(item))) {
+          const parent: any = await Zotero.Items.getAsync(item.parentID);
+          if (!parent) continue;
+          const previous = parents.get(parent.id);
+          parents.set(parent.id, {
+            item: parent,
+            allGroups: (!isNote && added.has(id)) || !!previous?.allGroups,
+          });
+        }
       } catch (e) {
-        error('[TaskGenerator] 新增条目处理失败，已跳过:', item?.key, e);
+        error('[TaskGenerator] 读取变更条目失败:', id, e);
       }
     }
-  }
-
-  /** 单个新增条目的增量判定 */
-  private async handleAddedItem(item: any): Promise<void> {
-    if (isParentItem(item)) {
-      // 父条目：对每个启用未归档技能组做「匹配 → 去重/晋升 → 创建」
-      const counters: ScanCounters = {
-        created: 0,
-        skipped: 0,
-        waitingMaterial: 0,
-        promoted: 0,
-        completedExisting: 0,
-      };
-      for (const sg of this.enabledSkillGroups()) {
+    // A moved/erased note may no longer expose its old parent. Stored result references
+    // let us re-evaluate that parent as well, including deletion after a restart.
+    for (const task of this.tasks.list({ status: 'done' })) {
+      if (task.completionOrigin !== 'existing-note' ||
+          (!recheckRemoved && !changedNoteKeys.has(task.noteKey ?? ''))) continue;
+      try {
+        const parent = Zotero.Items.getByLibraryAndKey(taskLibraryID(task.libraryID), task.itemKey);
+        if (parent && !parents.has(parent.id)) parents.set(parent.id, { item: parent, allGroups: false });
+      } catch (e) {
+        error('[TaskGenerator] 读取已有笔记父条目失败:', task.itemKey, e);
+      }
+    }
+    const counters = emptyScanResult('notification');
+    for (const { item, allGroups } of parents.values()) {
+      if (this.isAliveFn && !this.isAliveFn()) return;
+      for (const sg of allGroups ? this.enabledSkillGroups() : noteGroups) {
         await this.processItemForSkillGroup(sg, item, counters);
       }
-      if (
-        counters.created > 0 ||
-        counters.promoted > 0 ||
-        counters.completedExisting > 0
-      ) {
-        log(
-          `[TaskGenerator] 新增条目 ${item.key}: ` +
-            `created=${counters.created} promoted=${counters.promoted} ` +
-            `waitingMaterial=${counters.waitingMaterial} ` +
-            `completedExisting=${counters.completedExisting}`,
-        );
-      }
-      return;
-    }
-    if (isAttachmentItem(item)) {
-      // 附件条目：可能是等待材料的 PDF 后到了，重新判定其父条目
-      await this.handleAddedAttachment(item);
-    }
-    // 笔记等其他类型：忽略
-  }
-
-  /**
-   * 附件新增：取 parentID 得父条目，对该父条目的 waiting-material 任务
-   * 重新判定材料，齐了就晋升为待领取（FR-05 材料后到路径）。
-   */
-  private async handleAddedAttachment(att: any): Promise<void> {
-    const parentID = (att as { parentID?: unknown }).parentID;
-    if (typeof parentID !== 'number' || parentID <= 0) return;
-    let parent: any;
-    try {
-      parent = await Zotero.Items.getAsync(parentID);
-    } catch (e) {
-      error('[TaskGenerator] 加载附件父条目失败:', att?.key, e);
-      return;
-    }
-    if (!parent || !isParentItem(parent)) return;
-
-    const counters: ScanCounters = {
-      created: 0,
-      skipped: 0,
-      waitingMaterial: 0,
-      promoted: 0,
-      completedExisting: 0,
-    };
-    for (const sg of this.enabledSkillGroups()) {
-      await this.processItemForSkillGroup(sg, parent, counters);
-    }
-    if (
-      counters.promoted > 0 ||
-      counters.created > 0 ||
-      counters.completedExisting > 0
-    ) {
-      log(
-        `[TaskGenerator] 附件变更触发父条目重判 ${parent.key}: ` +
-          `created=${counters.created} promoted=${counters.promoted} ` +
-          `completedExisting=${counters.completedExisting}`
-      );
     }
   }
 }

@@ -1,106 +1,66 @@
 /**
- * scripts/release.mjs — 发布脚本
- *
- * 1. 生产构建（含 XPI）
- * 2. 计算 SHA-256 哈希
- * 3. 生成 update.json（供 Zotero 插件自动更新）
- * 4. 可选：--publish 创建 GitHub Release
- *
- * 用法：
- *   node scripts/release.mjs            # 打包 XPI + 生成 update.json
- *   node scripts/release.mjs --publish  # 同时发布 GitHub Release
+ * Build the XPI and update manifest. --publish publishes the exact source commit;
+ * prerelease versions are marked as such and never replace GitHub's latest release.
  */
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { assertPublishBranch, releaseArguments, releaseInfo, updateManifest } from './release-config.mjs';
 
-import { execSync } from 'child_process';
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
-import { resolve, dirname } from 'path';
-import { fileURLToPath } from 'url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = resolve(__dirname, '..');
-const pkg = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf-8'));
-const manifest = JSON.parse(
-  readFileSync(resolve(ROOT, 'addon/manifest.json'), 'utf-8')
-);
-
-const VERSION = pkg.version;
-const PLUGIN_ID = manifest.applications.zotero.id;
-const XPI_NAME = `${pkg.name}-${VERSION}.xpi`;
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const pkg = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8'));
+const manifest = JSON.parse(readFileSync(resolve(ROOT, 'addon/manifest.json'), 'utf8'));
+const info = releaseInfo(pkg.version);
 const DIST_DIR = resolve(ROOT, 'dist');
+const xpiPath = resolve(DIST_DIR, `${pkg.name}-${info.version}.xpi`);
+const updatePath = resolve(DIST_DIR, 'update.json');
+const publish = process.argv.includes('--publish');
 
-async function main() {
-  console.log(`\n🔨 发布 Skill Task v${VERSION}\n`);
-
-  // 1. 生产构建
-  console.log('📦 Step 1: Building...');
-  execSync('node scripts/build.mjs', { cwd: ROOT, stdio: 'inherit' });
-
-  const xpiPath = resolve(DIST_DIR, XPI_NAME);
-  if (!existsSync(xpiPath)) {
-    throw new Error(`XPI not found: ${xpiPath}`);
-  }
-
-  // 2. 计算 SHA-256 哈希（Node 内置 crypto，跨平台；Windows 无 shasum）
-  console.log('🔐 Step 2: Computing hash...');
-  const { createHash } = await import('crypto');
-  const { readFileSync } = await import('fs');
-  const hash = createHash('sha256').update(readFileSync(xpiPath)).digest('hex');
-  console.log(`   SHA-256: ${hash}`);
-
-  // 3. 生成 update.json
-  console.log('📝 Step 3: Generating update.json...');
-  const updateJson = {
-    addons: {
-      [PLUGIN_ID]: {
-        updates: [
-          {
-            version: VERSION,
-            update_link: `https://github.com/Yyu-ang/zotero-skill-task-mcp/releases/download/v${VERSION}/${XPI_NAME}`,
-            update_hash: `sha256:${hash}`,
-            applications: {
-              zotero: {
-                strict_min_version:
-                  manifest.applications.zotero.strict_min_version,
-                strict_max_version:
-                  manifest.applications.zotero.strict_max_version,
-              },
-            },
-          },
-        ],
-      },
-    },
-  };
-  mkdirSync(DIST_DIR, { recursive: true });
-  writeFileSync(
-    resolve(DIST_DIR, 'update.json'),
-    JSON.stringify(updateJson, null, 2)
-  );
-  // 仓库根目录的 update.json 供本地开发调试（构建产物，不进仓库）
-  writeFileSync(
-    resolve(ROOT, 'update.json'),
-    JSON.stringify(updateJson, null, 2)
-  );
-
-  console.log(`\n✅ 发布完成！`);
-
-  // 4. 可选：发布到 GitHub
-  if (process.argv.includes('--publish')) {
-    console.log('\n🚀 Step 4: Publishing to GitHub...');
-    execSync(
-      `gh release create v${VERSION} "${xpiPath}" "${resolve(DIST_DIR, 'update.json')}" --generate-notes`,
-      { cwd: ROOT, stdio: 'inherit' }
-    );
-    console.log('✅ Published to GitHub!');
-  }
-
-  console.log(`\n📋 输出文件：`);
-  console.log(`   ${xpiPath}`);
-  console.log(`   ${resolve(DIST_DIR, 'update.json')}`);
-  console.log(`   ${resolve(ROOT, 'update.json')} (dev 用)`);
-  console.log(`\n📌 更新 URL：${updateJson.addons[PLUGIN_ID].updates[0].update_link}`);
+function git(...args) {
+  return execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' }).trim();
 }
 
-main().catch((e) => {
-  console.error('Release failed:', e);
-  process.exit(1);
+async function main() {
+  let publishArgs;
+  if (publish) {
+    const branch = process.env.GITHUB_REF_NAME || git('branch', '--show-current');
+    assertPublishBranch(info.version, branch);
+    const head = git('rev-parse', 'HEAD');
+    const targetSha = process.env.GITHUB_SHA || head;
+    if (targetSha !== head) throw new Error('GITHUB_SHA does not match the checked-out source commit');
+    const notesFile = resolve(ROOT, 'docs/releases', `${info.tag}.md`);
+    publishArgs = releaseArguments({
+      version: info.version, targetSha, assets: [xpiPath, updatePath],
+      notesFile: existsSync(notesFile) ? notesFile : undefined,
+    });
+  }
+
+  console.log(`Building Skill Task ${info.tag}${info.prerelease ? ' (prerelease)' : ''}`);
+  execFileSync(process.execPath, [resolve(ROOT, 'scripts/build.mjs')], { cwd: ROOT, stdio: 'inherit' });
+  if (!existsSync(xpiPath)) throw new Error(`XPI not found: ${xpiPath}`);
+
+  const sha256 = createHash('sha256').update(readFileSync(xpiPath)).digest('hex');
+  const update = updateManifest({
+    version: info.version, name: pkg.name, pluginID: manifest.applications.zotero.id,
+    zotero: manifest.applications.zotero, sha256,
+  });
+  mkdirSync(DIST_DIR, { recursive: true });
+  const json = JSON.stringify(update, null, 2) + '\n';
+  writeFileSync(updatePath, json);
+  // This ignored copy is used by local development; the installed stable update URL stays unchanged.
+  writeFileSync(resolve(ROOT, 'update.json'), json);
+  console.log(`Packaged ${xpiPath}`);
+  console.log(`Update manifest: ${updatePath}`);
+
+  if (publishArgs) {
+    execFileSync('gh', publishArgs, { cwd: ROOT, stdio: 'inherit' });
+    console.log(`Published ${info.tag}${info.prerelease ? ' as a prerelease (not latest)' : ''}`);
+  }
+}
+
+main().catch(error => {
+  console.error('Release failed:', error);
+  process.exitCode = 1;
 });
