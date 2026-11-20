@@ -174,11 +174,11 @@ result.json
 - 本机 Zotero Connector：`http://127.0.0.1:23119/skilltask/mcp`（端口随 Zotero 设置变化）
 - 新增独立局域网监听：`http://<Zotero主机局域网IP>:23121/skilltask/mcp`
 
-例如在 Zotero 主机 `192.168.31.156`、客户端 5090D 上：
+例如在 Zotero 主机 `192.168.1.2`、客户端 5090D 上：
 
 ```powershell
-Test-NetConnection 192.168.31.156 -Port 23121
-pi mcp add zotero-taskskill --url "http://192.168.31.156:23121/skilltask/mcp"
+Test-NetConnection 192.168.1.2 -Port 23121
+pi mcp add zotero-taskskill --url "http://192.168.1.2:23121/skilltask/mcp"
 pi mcp list
 ```
 
